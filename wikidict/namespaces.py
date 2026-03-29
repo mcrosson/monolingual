@@ -5,11 +5,13 @@ Auto-generated with `python -m scripts`.
 
 # START
 namespaces = {
+    "ang": ["CAT", "Category", "File", "Image"],
     "ca": ["Categoria", "Fitxer", "Image", "Imatge"],
     "da": ["Billede", "Fil", "Image", "Kategori"],
     "de": ["Bild", "Datei", "Image", "Kategorie"],
     "el": ["Image", "Αρχείο", "Εικόνα", "Κατηγορία"],
     "en": ["CAT", "Category", "File", "Image"],
+    "enm": ["CAT", "Category", "File", "Image"],
     "eo": ["Dosiero", "Image", "Kategorio"],
     "es": ["Archivo", "Categoría", "Image", "Imagen"],
     "fr": ["Catégorie", "Fichier", "Image"],

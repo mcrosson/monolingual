@@ -33,7 +33,7 @@ ASSET_CHECKSUM_ALGO = "sha256"
 # Locales relations
 # Example with FRO (Old French) that uses the FR (French) Wiktionary dump as source.
 # Syntax: "locale": "origin locale"
-LOCALE_ORIGIN = {"fro": "fr"}
+LOCALE_ORIGIN = {"ang": "en", "enm": "en", "fro": "fr"}
 
 # Dictionaries known to be problematic about the number of chars in MobiPocket
 MOBI_CLEANUP = {"en", "en:en", "fr", "fr:fr"}

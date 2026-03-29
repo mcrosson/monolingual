@@ -175,8 +175,8 @@ def process(file: Path, locale: str) -> bool:
     template_matcher = re.compile(rf"<title>({lang.template_trans[lang_dst]}:[^<]+)</title>").finditer
     appendix_matcher = re.compile(rf"<title>({lang.appendix_trans[lang_dst]}:[^<]+)</title>").finditer
 
-    if is_monolingual := lang_src == lang_dst:
-        context.setup_modules_db(locale, db_already_setup=False)
+    is_monolingual = lang_src == lang_dst
+    context.setup_modules_db(locale, db_already_setup=False)
 
     for element in xml_iter_parse(file, locale):
         title, code = xml_parse_element(
@@ -184,7 +184,7 @@ def process(file: Path, locale: str) -> bool:
             module_matcher,
             template_matcher,
             appendix_matcher,
-            is_monolingual=is_monolingual,
+            is_monolingual=True,
         )
         if not title or not code or (lang_dst == "en" and title[:19] == "Unsupported titles/"):
             continue
@@ -217,23 +217,22 @@ def process(file: Path, locale: str) -> bool:
 
         context.new_page(title, 0, body, None)
 
-    if is_monolingual:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(complete_style="green", finished_style="bold green"),
-            TimeElapsedColumn(),
-        ) as progress:
-            task = progress.add_task(f"[cyan][{lang_src.upper()}-{lang_dst.upper()}] Adapting templates", total=None)
-            context.adapt_templates(lang_dst)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(complete_style="green", finished_style="bold green"),
+        TimeElapsedColumn(),
+    ) as progress:
+        task = progress.add_task(f"[cyan][{lang_src.upper()}-{lang_dst.upper()}] Adapting templates", total=None)
+        context.adapt_templates(lang_dst)
 
-            # Final update to ensure we show 100%
-            progress.update(
-                task,
-                total=100,
-                completed=100,
-                description=f"[magenta][{lang_src.upper()}-{lang_dst.upper()}] Adapted templates [green]✓[/green]",
-            )
+        # Final update to ensure we show 100%
+        progress.update(
+            task,
+            total=100,
+            completed=100,
+            description=f"[magenta][{lang_src.upper()}-{lang_dst.upper()}] Adapted templates [green]✓[/green]",
+        )
 
     word_count = context.get_word_count()
     context.close_ctx()
