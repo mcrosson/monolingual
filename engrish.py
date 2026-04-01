@@ -358,11 +358,17 @@ def merge_dfs(
             loc, (syns, html) = present[0]
             merged[word] = (syns, _prefix_res_urls(html, loc))
         else:
-            # Multiple locales — add language-period headings, no synonyms at top level
+            # Multiple locales — union synonyms, add language-period headings
+            seen_syns: set[str] = set()
+            all_syns: list[str] = []
             combined = ""
-            for loc, (_, html) in present:
+            for loc, (syns, html) in present:
+                for s in syns:
+                    if s not in seen_syns:
+                        seen_syns.add(s)
+                        all_syns.append(s)
                 combined += f"<h3>{FORM_NAMES[loc]}</h3>{_prefix_res_urls(html, loc)}"
-            merged[word] = ([], combined)
+            merged[word] = (all_syns, combined)
 
     return merged
 
