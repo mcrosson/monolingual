@@ -833,7 +833,14 @@ def generate_epub(locales: list[str], epub_path: Path) -> None:
     )
     ncx = _NCX_TEMPLATE.format(nav_points=nav_points.rstrip())
 
-    font_data = (FONTS_DIR / "Charis-Regular.woff").read_bytes()
+    font_path = FONTS_DIR / "Charis-Regular.woff"
+    if not font_path.exists():
+        raise FileNotFoundError(
+            f"Required font not found: {font_path}\n"
+            f"Download Charis SIL from https://software.sil.org/charis/ "
+            f"and place the web font at {font_path}"
+        )
+    font_data = font_path.read_bytes()
 
     with zipfile.ZipFile(epub_path, "w") as zf:
         zf.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip")
@@ -927,10 +934,13 @@ def _process_form(form: str, *, no_cache: bool) -> None:
     # 4. Always generate the sampler EPUB alongside the StarDict folders
     epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
     log.info("Generating sampler EPUB: %s", epub_path)
-    generate_epub(locales, epub_path)
+    try:
+        generate_epub(locales, epub_path)
+        log.info("EPUB:   %s", epub_path)
+    except FileNotFoundError as exc:
+        log.error("EPUB generation failed: %s", exc)
 
     log.info("Done. Output: %s", form_dir)
-    log.info("EPUB:   %s", epub_path)
 
 
 if __name__ == "__main__":
