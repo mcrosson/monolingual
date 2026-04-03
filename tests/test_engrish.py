@@ -199,6 +199,9 @@ def test_epub_structure(engrish_epubs: dict[str, Path], form: str) -> None:
         if len(locales) > 1:
             assert "OEBPS/cross_language.html" in names
 
+        # Missing chapter always present
+        assert "OEBPS/missing.html" in names
+
 
 @pytest.mark.parametrize("form", FORM_IDS)
 def test_epub_chapter_content(engrish_epubs: dict[str, Path], form: str) -> None:
@@ -214,6 +217,11 @@ def test_epub_chapter_content(engrish_epubs: dict[str, Path], form: str) -> None
         # Stress test should have size info
         stress = zf.read("OEBPS/stress_test.html").decode("utf-8")
         assert "KB" in stress
+
+        # Missing chapter should have overview table and word lists
+        missing = zf.read("OEBPS/missing.html").decode("utf-8")
+        assert "<table>" in missing
+        assert "Overview" in missing
 
 
 # ---------------------------------------------------------------------------

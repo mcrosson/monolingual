@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import DATA_DIR
+from . import config
 
 
 def parse_source_dir() -> Path:
     """Shared parse DB directory (all locales use the EN Wiktionary)."""
-    return DATA_DIR / "en"
+    return config.DATA_DIR / "en"
 
 
 def render_source_dir(locale: str) -> Path:
@@ -17,7 +17,7 @@ def render_source_dir(locale: str) -> Path:
     from wikidict import utils
 
     lang_src, lang_dst = utils.guess_locales(locale, use_log=False)
-    return DATA_DIR / lang_dst / lang_src
+    return config.DATA_DIR / lang_dst / lang_src
 
 
 def output_dir(locale: str) -> Path:
@@ -41,9 +41,7 @@ def stardict_zip_path(locale: str, noetym: bool = False) -> Path:
 
 
 def engrish_form_dir(form: str) -> Path:
-    from .config import ENGRISH_DIR
-
-    return ENGRISH_DIR / form.replace("+", "-")
+    return config.ENGRISH_DIR / form.replace("+", "-")
 
 
 def dict_base_name(form: str, date: str, noetym: bool = False) -> str:
