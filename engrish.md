@@ -59,3 +59,11 @@ Dictionaries are written to `data/engrish/<form>/`, where `<form>` is the locale
 ## Config
 
 `engrish.json` in the project root defines which languages to extract from the English Wiktionary. Each entry maps an ISO language code to its Wiktionary section heading and display name. Use `add-language` to populate it.
+
+## Testing
+
+Only needed if you are modifying the engrish source code. The test suite runs the full pipeline against real Wiktionary data and verifies dictionary generation, merging, EPUB output, and stats. The first run is slow (it generates StarDict dictionaries); subsequent runs reuse cached output.
+
+```bash
+python -m pytest tests/test_engrish.py -x -vvv
+```
