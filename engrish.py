@@ -49,7 +49,7 @@ ALL_LOCALES = ["en"] + list(_ENGRISH_CFG)
 
 # Human-readable names for each locale
 FORM_NAMES: dict[str, str] = {"en": "Modern English"}
-FORM_NAMES.update({code: cfg["name"] for code, cfg in _ENGRISH_CFG.items()})
+FORM_NAMES.update({code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items()})
 
 # Display order: en first, then config order
 DISPLAY_ORDER = list(ALL_LOCALES)

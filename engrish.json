@@ -1,10 +1,10 @@
 {
     "ang": {
-        "heading": "old english",
-        "name": "Old English"
+        "wiktionary_section": "old english",
+        "display_name": "Old English"
     },
     "enm": {
-        "heading": "middle english",
-        "name": "Middle English"
+        "wiktionary_section": "middle english",
+        "display_name": "Middle English"
     }
 }

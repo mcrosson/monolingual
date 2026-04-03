@@ -29,8 +29,8 @@ if _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
         for _attr in dir(_en_module):
             if not _attr.startswith("_"):
                 setattr(_mod, _attr, getattr(_en_module, _attr))
-        _mod.head_sections = (_cfg["heading"],)
-        _heading_title = _cfg["heading"].replace(" ", "_").title()
+        _mod.head_sections = (_cfg["wiktionary_section"],)
+        _heading_title = _cfg["wiktionary_section"].replace(" ", "_").title()
         _mod.random_word_url = f"https://en.wiktionary.org/wiki/Special:RandomInCategory/{_heading_title}_lemmas#{_heading_title.replace('_', ' ')}"
         _ALL_LOCALES[_code] = _mod
 
