@@ -57,6 +57,15 @@ def main() -> int:
         help=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}, all",
     )
 
+    epub_parser = subparsers.add_parser("epub", help="Generate sampler EPUB for existing dictionaries")
+    epub_parser.add_argument(
+        "--dict",
+        action="append",
+        required=True,
+        metavar="FORM",
+        help="Dictionary form to generate EPUB for (e.g. ang+en), or 'all' for every existing dictionary. May be specified multiple times.",
+    )
+
     subparsers.add_parser(
         "language-stats",
         help="Show per-language statistics from the EN Wiktionary dump",
@@ -81,6 +90,11 @@ def main() -> int:
             else:
                 locales = _parse_form(form)
                 process_form(form, locales)
+
+    elif args.command == "epub":
+        from .epub import run as run_epub
+
+        return run_epub(args.dict)
 
     elif args.command == "language-stats":
         from .stats import run

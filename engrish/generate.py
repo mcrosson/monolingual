@@ -6,7 +6,6 @@ import logging
 import shutil
 
 from .config import FORM_NAMES
-from .epub import generate_epub
 from .merge import collect_locale_res, merge_dfs, write_merged_df
 from .paths import (
     dict_base_name,
@@ -92,13 +91,5 @@ def process_form(form: str, locales: list[str]) -> None:
     else:
         log.info("Building merged StarDict for locales: %s", locales)
         build_merged_output(locales, form, form_dir, date)
-
-    epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
-    log.info("Generating sampler EPUB: %s", epub_path)
-    try:
-        generate_epub(locales, epub_path)
-        log.info("EPUB:   %s", epub_path)
-    except FileNotFoundError as exc:
-        log.error("EPUB generation failed: %s", exc)
 
     log.info("Done. Output: %s", form_dir)

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import random
+import sys
 import zipfile
 from pathlib import Path
 
 from .config import DISPLAY_ORDER, FONTS_DIR, FORM_NAMES, UNIVERSAL_WORDS
 from .merge import parse_df
-from .paths import df_path
+from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date
 
 log = logging.getLogger(__name__)
 
@@ -234,3 +235,53 @@ def generate_epub(locales: list[str], epub_path: Path) -> None:
             zf.writestr(f"OEBPS/chapter_{locale}.html", chapter, compress_type=zipfile.ZIP_DEFLATED)
 
     log.info("EPUB written: %s", epub_path)
+
+
+def _discover_all_dicts() -> list[str]:
+    """Return form names for all existing dictionary directories in the engrish output."""
+    from .config import ENGRISH_DIR
+
+    if not ENGRISH_DIR.exists():
+        return []
+    return sorted(
+        d.name.replace("-", "+")
+        for d in ENGRISH_DIR.iterdir()
+        if d.is_dir() and any(d.iterdir())
+    )
+
+
+def run(dicts: list[str]) -> int:
+    """Validate dictionaries exist, then generate EPUBs for each."""
+    # Expand "all" to every existing dictionary
+    if "all" in dicts:
+        dicts = _discover_all_dicts()
+        if not dicts:
+            print("Error: no existing dictionaries found in engrish output directory", file=sys.stderr)
+            return 1
+        log.info("Discovered dictionaries: %s", ", ".join(dicts))
+
+    errors: list[str] = []
+    for form in dicts:
+        form_dir = engrish_form_dir(form)
+        if not form_dir.exists() or not any(form_dir.iterdir()):
+            errors.append(f"Dictionary '{form}' not found at {form_dir}")
+
+    if errors:
+        for err in errors:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    for form in dicts:
+        form_dir = engrish_form_dir(form)
+        locales = [c.strip() for c in form.split("+") if c.strip()]
+        date = get_snapshot_date(locales)
+
+        epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
+        log.info("Generating sampler EPUB: %s", epub_path)
+        try:
+            generate_epub(locales, epub_path)
+            log.info("EPUB: %s", epub_path)
+        except FileNotFoundError as exc:
+            log.error("EPUB generation failed for '%s': %s", form, exc)
+
+    return 0
