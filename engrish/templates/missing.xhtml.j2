@@ -1,0 +1,25 @@
+<h1 id="top">Missing</h1>
+<p>Words present in the Wiktionary source data that could not be processed into dictionary entries. These are typically caused by unsupported templates or incomplete wikitext markup.</p>
+
+<h2 id="missing-overview">Overview</h2>
+<table>
+  <tr>
+    <th>Language</th>
+    <th>Missing</th>
+  </tr>
+  {% for locale in locales %}
+  <tr>
+    <td>{{ locale.name }}</td>
+    <td>{{ "{:,}".format(locale.missing_count) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% for locale in locales %}
+<h2 id="{{ locale.anchor }}">{{ locale.name }}</h2>
+<p>
+{%- for row in locale.word_rows %}
+{{ row }}{% if not loop.last %}<br/>{% endif %}
+{%- endfor %}
+</p>
+{% endfor %}

@@ -65,9 +65,8 @@ def engrish_pipeline() -> dict[str, Path]:
     cfg.DATA_DIR = Path(project_root) / "data"
     cfg.ENGRISH_DIR = cfg.DATA_DIR / "engrish"
 
-    # Run pipeline for all needed locales
-    for locale in ("en", "ang", "enm"):
-        run_wikidict(locale)
+    # Run pipeline for all needed locales (once, grouped by source dump)
+    run_wikidict(["en", "ang", "enm"])
 
     # Generate each test form (skip if output already exists)
     result: dict[str, Path] = {}

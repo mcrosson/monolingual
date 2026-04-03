@@ -43,29 +43,61 @@ def delete_cache(locales: list[str]) -> None:
             shutil.rmtree(odir)
 
 
-def run_wikidict(locale: str) -> None:
-    """Run the full wikidict pipeline for a locale, skipping steps already completed."""
+def run_wikidict(locales: list[str]) -> None:
+    """Run the full wikidict pipeline for all locales.
+
+    Groups locales by source dump so download+parse happens once per dump
+    (parse.main deletes the XML after parsing, so all locales sharing a
+    dump must be parsed before the XML is removed).  Then render+convert
+    each locale individually.
+    """
     from wikidict import convert as wikidict_convert
-    from wikidict import download, parse, render
+    from wikidict import download, parse, render, utils
 
-    log.info("=== [%s] download ===", locale)
-    download.main(locale)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for loc in locales:
+        if loc not in seen:
+            seen.add(loc)
+            unique.append(loc)
 
-    log.info("=== [%s] parse ===", locale)
-    parse.main(locale)
+    # Group by source dump
+    by_source: dict[str, list[str]] = {}
+    for locale in unique:
+        src, _ = utils.guess_locales(locale, use_log=False)
+        by_source.setdefault(src, []).append(locale)
 
-    # render.main() has no skip-if-exists guard — check manually
-    render_dir = render_source_dir(locale)
-    if list(render_dir.glob("data-*.json")):
-        log.info("[%s] Already rendered — skipping", locale)
-    else:
-        log.info("=== [%s] render ===", locale)
-        render.main(locale)
+    # Phase 1: download + parse (grouped by source dump)
+    # parse.main deletes the XML after parsing, so skip download entirely
+    # if the .sqlite already exists — otherwise we waste ~3 min decompressing
+    # a 12GB XML that won't be used.
+    for src, group in by_source.items():
+        src_dir = parse_source_dir()
+        has_sqlite = bool(list(src_dir.glob("pages-*.sqlite")))
 
-    # convert.main() has no skip-if-exists guard — check manually
-    out = output_dir(locale)
-    if out.exists() and any(out.glob("dict-*.df")):
-        log.info("[%s] Already converted — skipping", locale)
-    else:
-        log.info("=== [%s] convert ===", locale)
-        wikidict_convert.main(locale)
+        if not has_sqlite:
+            log.info("=== [%s] download ===", group[0])
+            download.main(group[0])
+
+            for locale in group:
+                log.info("=== [%s] parse ===", locale)
+                parse.main(locale)
+        else:
+            log.info("[%s] Already parsed — skipping download+parse", src)
+
+    # Phase 2: render + convert (per locale)
+    for locale in unique:
+        render_dir = render_source_dir(locale)
+        if list(render_dir.glob("data-*.json")):
+            log.info("[%s] Already rendered — skipping", locale)
+        else:
+            log.info("=== [%s] render ===", locale)
+            render.main(locale)
+
+        out = output_dir(locale)
+        if out.exists() and any(out.glob("dict-*.df")):
+            log.info("[%s] Already converted — skipping", locale)
+        else:
+            log.info("=== [%s] convert ===", locale)
+            wikidict_convert.main(locale)

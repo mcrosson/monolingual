@@ -1,20 +1,24 @@
 <h1>Summary</h1>
-<p>Definition language: <b>Modern English</b></p>
+<p>Overview of the dictionary contents, source data, and configuration.</p>
 
 <h2>Source Languages</h2>
 <table>
   <tr>
     <th>Language</th>
-    <th>Code</th>
     <th>Entries</th>
-    <th>Synonyms / Alternates</th>
+    <th>Alternates</th>
   </tr>
   {% for lang in languages %}
   <tr>
-    <td>{{ lang.name }}</td>
-    <td>{{ lang.code }}</td>
+    <td>{{ lang.name }} ({{ lang.code }})</td>
     <td>{{ "{:,}".format(lang.entries) }}</td>
     <td>{{ "{:,}".format(lang.synonyms) }}</td>
   </tr>
   {% endfor %}
 </table>
+
+<h2>Definition Language</h2>
+<p>Modern English</p>
+
+<h2>Data Snapshot Date</h2>
+<p>{{ snapshot_date }}</p>

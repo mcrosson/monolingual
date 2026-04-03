@@ -13,7 +13,6 @@ from .paths import (
     get_snapshot_date,
     stardict_zip_path,
 )
-from .pipeline import run_wikidict
 from .stardict import (
     convert_df_to_stardict,
     extract_stardict_zip,
@@ -69,11 +68,12 @@ def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> N
 
 
 def process_form(form: str, locales: list[str]) -> None:
-    """Run the full pipeline and generate output for a single form."""
-    form_dir = engrish_form_dir(form)
+    """Generate engrish output for a single form.
 
-    for locale in locales:
-        run_wikidict(locale)
+    Assumes the wikidict pipeline has already been run for all locales
+    (call run_wikidict before this).
+    """
+    form_dir = engrish_form_dir(form)
 
     form_dir.mkdir(parents=True, exist_ok=True)
     for child in form_dir.iterdir():

@@ -107,14 +107,34 @@ def main() -> int:
 
     if args.command == "generate":
         from .generate import process_form
+        from .pipeline import run_wikidict
 
+        # Collect all forms and their locales
+        forms: list[tuple[str, list[str]]] = []
         if args.all:
             all_form = "+".join(ALL_LOCALES)
-            process_form(all_form, _parse_form(all_form))
+            forms.append((all_form, _parse_form(all_form)))
         else:
             for form in args.engrish_type:
-                locales = _parse_form(form)
-                process_form(form, locales)
+                forms.append((form, _parse_form(form)))
+
+        # Phase 1: run wikidict pipeline for all unique locales (once)
+        all_locales: list[str] = []
+        for _, locales in forms:
+            all_locales.extend(locales)
+        run_wikidict(all_locales)
+
+        # Restore console logging (wikidict's setup_logging redirects to file)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%H:%M:%S",
+            force=True,
+        )
+
+        # Phase 2: generate engrish output per form
+        for form, locales in forms:
+            process_form(form, locales)
 
     elif args.command == "epub":
         from .epub import run as run_epub
