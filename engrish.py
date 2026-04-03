@@ -2,16 +2,16 @@
 """engrish.py — Build dictionaries with Modern English definitions.
 
 Usage:
-    python engrish.py --engrish-form FORM [--no-cache]
+    python engrish.py [--no-cache] generate --engrish-type FORM [--engrish-type FORM ...]
 
 FORM is a locale code or '+'-separated list of locale codes.
 Use 'all' to build all configured locales combined.
 
 Examples:
-    python engrish.py --engrish-form en
-    python engrish.py --engrish-form ang+en
-    python engrish.py --engrish-form ang+enm+en
-    python engrish.py --engrish-form all
+    python engrish.py generate --engrish-type en
+    python engrish.py generate --engrish-type ang+en
+    python engrish.py generate --engrish-type ang --engrish-type enm+en
+    python engrish.py generate --engrish-type all
 """
 
 from __future__ import annotations
@@ -893,40 +893,46 @@ def main() -> int:
     available = ", ".join(ALL_LOCALES)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--engrish-form",
-        required=True,
-        metavar="FORM",
-        help=f"Locale code or '+'-separated codes to build. Available: {available}, all",
-    )
-    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Delete all cached downloads and pre-processing data before running",
     )
-    args = parser.parse_args()
+    subparsers = parser.add_subparsers(dest="command")
 
-    if args.engrish_form == "all":
-        # Delete cache once upfront (covers all locales), then process every form
-        if args.no_cache:
-            log.info("Clearing cache for all locales")
-            delete_cache(list(ALL_LOCALES))
-        form = "+".join(ALL_LOCALES)
-        _process_form(form, _parse_form(form), no_cache=False)
-    else:
-        locales = _parse_form(args.engrish_form)
-        _process_form(args.engrish_form, locales, no_cache=args.no_cache)
+    gen_parser = subparsers.add_parser("generate", help="Generate StarDict dictionaries")
+    gen_parser.add_argument(
+        "--engrish-type",
+        action="append",
+        required=True,
+        metavar="FORM",
+        help=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}, all",
+    )
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        return 1
+
+    # Clear cache upfront if requested, before any subcommand runs
+    if args.no_cache:
+        log.info("Clearing cache for all locales")
+        delete_cache(list(ALL_LOCALES))
+
+    if args.command == "generate":
+        for form in args.engrish_type:
+            if form == "all":
+                all_form = "+".join(ALL_LOCALES)
+                _process_form(all_form, _parse_form(all_form))
+            else:
+                locales = _parse_form(form)
+                _process_form(form, locales)
 
     return 0
 
 
-def _process_form(form: str, locales: list[str], *, no_cache: bool) -> None:
+def _process_form(form: str, locales: list[str]) -> None:
     """Run the full pipeline and generate output for a single form."""
     form_dir = engrish_form_dir(form)
-
-    # 1. Clear cache if requested
-    if no_cache:
-        log.info("Clearing cache for locales: %s", locales)
-        delete_cache(locales)
 
     # 2. Run wikidict pipeline for each locale
     for locale in locales:
