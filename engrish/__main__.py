@@ -66,6 +66,15 @@ def main() -> int:
         help="Dictionary form to generate EPUB for (e.g. ang+en), or 'all' for every existing dictionary. May be specified multiple times.",
     )
 
+    add_lang_parser = subparsers.add_parser("add-language", help="Add languages to engrish.json config")
+    add_lang_parser.add_argument(
+        "--lang",
+        action="append",
+        required=True,
+        metavar="CODE",
+        help="ISO language code to add (e.g. fr, de, es), or 'all'. May be specified multiple times.",
+    )
+
     subparsers.add_parser(
         "language-stats",
         help="Show per-language statistics from the EN Wiktionary dump",
@@ -95,6 +104,11 @@ def main() -> int:
         from .epub import run as run_epub
 
         return run_epub(args.dict)
+
+    elif args.command == "add-language":
+        from .add_language import run as run_add_language
+
+        return run_add_language(args.lang)
 
     elif args.command == "language-stats":
         from .stats import run
