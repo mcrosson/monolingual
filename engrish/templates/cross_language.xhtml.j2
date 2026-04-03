@@ -1,0 +1,12 @@
+<h1>Cross-Language Words</h1>
+<p>Words with entries across multiple source languages.</p>
+
+{% for entry in entries %}
+<h2>{{ entry.headword }}</h2>
+{% for locale_entry in entry.locales %}
+<h3>{{ locale_entry.name }}</h3>
+{% with word = locale_entry %}
+{% include "word_meta.xhtml.j2" %}
+{% endwith %}
+{% endfor %}
+{% endfor %}

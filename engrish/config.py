@@ -21,10 +21,6 @@ FORM_NAMES.update({code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items
 # Display order: en first, then config order
 DISPLAY_ORDER = list(ALL_LOCALES)
 
-# Words with verified substantive definitions in all three English periods.
-# Used for the "Universal" epub chapter.
-UNIVERSAL_WORDS = ["amen", "bolster", "brand", "colt", "gold", "word"]
-
 DATA_DIR = Path(os.getenv("CWD", "")) / "data"
 ENGRISH_DIR = DATA_DIR / "engrish"
 FONTS_DIR = Path(__file__).parent.parent / "fonts" / "Charis-7.000" / "web"

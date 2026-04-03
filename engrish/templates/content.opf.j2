@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Engrish Dictionary Sampler — {{ form }}</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier id="bookid">engrish-sampler-{{ form }}</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="stylesheet" href="styles.css" media-type="text/css"/>
+    <item id="font-regular" href="fonts/Charis-Regular.woff" media-type="font/woff"/>
+    {% for ch in chapters %}
+    <item id="{{ ch.id }}" href="{{ ch.filename }}" media-type="application/xhtml+xml"/>
+    {% endfor %}
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    {% for ch in chapters %}
+    <itemref idref="{{ ch.id }}"/>
+    {% endfor %}
+  </spine>
+</package>

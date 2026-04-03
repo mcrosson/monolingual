@@ -1,0 +1,7 @@
+<h1>{{ locale_name }}</h1>
+<p>Random sample entries for spot-checking.</p>
+
+{% for word in words %}
+<h2>{{ word.headword }}</h2>
+{% include "word_meta.xhtml.j2" %}
+{% endfor %}

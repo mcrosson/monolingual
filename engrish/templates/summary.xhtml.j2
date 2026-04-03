@@ -1,0 +1,20 @@
+<h1>Summary</h1>
+<p>Definition language: <b>Modern English</b></p>
+
+<h2>Source Languages</h2>
+<table>
+  <tr>
+    <th>Language</th>
+    <th>Code</th>
+    <th>Entries</th>
+    <th>Synonyms / Alternates</th>
+  </tr>
+  {% for lang in languages %}
+  <tr>
+    <td>{{ lang.name }}</td>
+    <td>{{ lang.code }}</td>
+    <td>{{ "{:,}".format(lang.entries) }}</td>
+    <td>{{ "{:,}".format(lang.synonyms) }}</td>
+  </tr>
+  {% endfor %}
+</table>

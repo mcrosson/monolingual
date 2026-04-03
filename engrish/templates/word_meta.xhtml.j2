@@ -1,0 +1,5 @@
+<p>Size: {{ "%.1f"|format(word.size_kb) }} KB</p>
+{% if word.pos %}<p>Parts of speech: {{ word.pos | join(", ") }}</p>{% endif %}
+{% if word.synonym_count %}<p>Synonyms: {{ word.synonym_count }}</p>{% endif %}
+{% if word.pronunciations %}<p>Pronunciation: {{ word.pronunciations | join(", ") }}</p>{% endif %}
+{% if word.genders %}<p>Gender: {{ word.genders | join(", ") }}</p>{% endif %}

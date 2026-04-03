@@ -1,0 +1,10 @@
+<h1>Test Dictionary Lookups</h1>
+<p>The largest entries per language. Use these to verify your dictionary reader handles large entries without crashing.</p>
+
+{% for locale in locales %}
+<h2>{{ locale.name }}</h2>
+{% for word in locale.words %}
+<h3>{{ word.headword }}</h3>
+{% include "word_meta.xhtml.j2" %}
+{% endfor %}
+{% endfor %}
