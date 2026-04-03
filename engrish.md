@@ -50,7 +50,7 @@ Creates a test EPUB with sample entries from existing dictionaries.
 
 ### `--no-cache`
 
-Global flag — can be used with any subcommand. Deletes all cached downloads, parse databases, and pre-processing data before the subcommand runs, forcing a full reprocess.
+Global flag — can be used with any subcommand. Deletes all cached downloads, parse databases, and pre-processing data before the subcommand runs, forcing a full reprocess. To wipe the cache manually, delete the `data/` directory.
 
 ## Output
 
