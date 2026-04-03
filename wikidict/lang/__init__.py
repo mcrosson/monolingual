@@ -1,5 +1,7 @@
 """Internationalization stuff."""
 
+import json
+import types
 from collections import defaultdict
 from collections.abc import Callable
 from importlib import import_module
@@ -13,6 +15,24 @@ _ALL_LOCALES = {
     for locale in sorted(Path(__file__).parent.glob("*"))
     if locale.is_dir() and bool(list(locale.glob("*.py", case_sensitive=True)))
 }
+
+# Register derived languages from engrish.json (languages extracted from the
+# English Wiktionary with definitions in Modern English).
+_ENGRISH_JSON = Path(__file__).parent.parent.parent / "engrish.json"
+if _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
+    _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8"))
+    _en_module = _ALL_LOCALES["en"]
+    for _code, _cfg in _engrish_cfg.items():
+        if _code in _ALL_LOCALES:
+            continue
+        _mod = types.ModuleType(f"wikidict.lang.{_code}")
+        for _attr in dir(_en_module):
+            if not _attr.startswith("_"):
+                setattr(_mod, _attr, getattr(_en_module, _attr))
+        _mod.head_sections = (_cfg["heading"],)
+        _heading_title = _cfg["heading"].replace(" ", "_").title()
+        _mod.random_word_url = f"https://en.wiktionary.org/wiki/Special:RandomInCategory/{_heading_title}_lemmas#{_heading_title.replace('_', ' ')}"
+        _ALL_LOCALES[_code] = _mod
 
 
 def _populate(attr: str) -> dict[str, Any]:

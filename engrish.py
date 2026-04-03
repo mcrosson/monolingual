@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""engrish.py — Build English-family dictionaries (Modern, Middle, Old English).
+"""engrish.py — Build dictionaries with Modern English definitions.
 
 Usage:
     python engrish.py --engrish-form FORM [--no-cache]
 
-Forms:
-    en            Modern English only
-    enm           Middle English only
-    ang           Old English only
-    enm+en        Middle + Modern English (merged)
-    ang+en        Old + Modern English (merged)
-    ang+enm+en    Old + Middle + Modern English (merged)
+FORM is a locale code or '+'-separated list of locale codes.
+Use 'all' to build all configured locales combined.
+
+Examples:
+    python engrish.py --engrish-form en
+    python engrish.py --engrish-form ang+en
+    python engrish.py --engrish-form ang+enm+en
+    python engrish.py --engrish-form all
 """
 
 from __future__ import annotations
 
 import argparse
 import gzip
+import json
 import logging
 import os
 import random
@@ -34,26 +36,23 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Config — loaded from engrish.json
 # ---------------------------------------------------------------------------
 
-LOCALES_FOR_FORM: dict[str, list[str]] = {
-    "en": ["en"],
-    "enm": ["enm"],
-    "ang": ["ang"],
-    "enm+en": ["en", "enm"],
-    "ang+en": ["en", "ang"],
-    "ang+enm+en": ["en", "enm", "ang"],
-}
+_ENGRISH_JSON = Path(__file__).parent / "engrish.json"
+_ENGRISH_CFG: dict[str, dict[str, str]] = (
+    json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")) if _ENGRISH_JSON.exists() else {}
+)
 
-FORM_NAMES = {
-    "en": "Modern English",
-    "enm": "Middle English",
-    "ang": "Old English",
-}
+# All known locale codes: "en" (always present) + everything in the config
+ALL_LOCALES = ["en"] + list(_ENGRISH_CFG)
 
-# Display order: modern → middle → old
-DISPLAY_ORDER = ["en", "enm", "ang"]
+# Human-readable names for each locale
+FORM_NAMES: dict[str, str] = {"en": "Modern English"}
+FORM_NAMES.update({code: cfg["name"] for code, cfg in _ENGRISH_CFG.items()})
+
+# Display order: en first, then config order
+DISPLAY_ORDER = list(ALL_LOCALES)
 
 # Words with verified substantive definitions in all three English periods.
 # Used for the "Universal" epub chapter.
@@ -863,6 +862,27 @@ def generate_epub(locales: list[str], epub_path: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _parse_form(form: str) -> list[str]:
+    """Parse a form string into a validated list of locale codes.
+
+    Accepts a single locale code (e.g. 'ang') or '+'-separated codes (e.g. 'ang+en').
+    Returns the list of locales in the order given.
+    """
+    codes = [c.strip() for c in form.split("+") if c.strip()]
+    if not codes:
+        print(f"Error: empty form string", file=sys.stderr)
+        sys.exit(1)
+    for code in codes:
+        if code not in ALL_LOCALES:
+            print(
+                f"Error: unknown locale '{code}'. "
+                f"Available: {', '.join(ALL_LOCALES)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    return codes
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -870,13 +890,13 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
+    available = ", ".join(ALL_LOCALES)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--engrish-form",
         required=True,
-        choices=list(LOCALES_FOR_FORM) + ["all"],
         metavar="FORM",
-        help="Which English form(s) to build: " + ", ".join(list(LOCALES_FOR_FORM) + ["all"]),
+        help=f"Locale code or '+'-separated codes to build. Available: {available}, all",
     )
     parser.add_argument(
         "--no-cache",
@@ -889,18 +909,18 @@ def main() -> int:
         # Delete cache once upfront (covers all locales), then process every form
         if args.no_cache:
             log.info("Clearing cache for all locales")
-            delete_cache(["en", "enm", "ang"])
-        for form in LOCALES_FOR_FORM:
-            _process_form(form, no_cache=False)
+            delete_cache(list(ALL_LOCALES))
+        form = "+".join(ALL_LOCALES)
+        _process_form(form, _parse_form(form), no_cache=False)
     else:
-        _process_form(args.engrish_form, no_cache=args.no_cache)
+        locales = _parse_form(args.engrish_form)
+        _process_form(args.engrish_form, locales, no_cache=args.no_cache)
 
     return 0
 
 
-def _process_form(form: str, *, no_cache: bool) -> None:
+def _process_form(form: str, locales: list[str], *, no_cache: bool) -> None:
     """Run the full pipeline and generate output for a single form."""
-    locales: list[str] = LOCALES_FOR_FORM[form]
     form_dir = engrish_form_dir(form)
 
     # 1. Clear cache if requested

@@ -1,3 +1,6 @@
+# Claude
+.claude/
+
 # Project stuff
 *.sha256
 *.bz2
