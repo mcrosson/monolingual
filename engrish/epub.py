@@ -250,10 +250,9 @@ def _discover_all_dicts() -> list[str]:
     )
 
 
-def run(dicts: list[str]) -> int:
+def run(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
     """Validate dictionaries exist, then generate EPUBs for each."""
-    # Expand "all" to every existing dictionary
-    if "all" in dicts:
+    if all_dicts:
         dicts = _discover_all_dicts()
         if not dicts:
             print("Error: no existing dictionaries found in engrish output directory", file=sys.stderr)

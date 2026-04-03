@@ -29,6 +29,22 @@ def _parse_form(form: str) -> list[str]:
     return codes
 
 
+def _add_all_or_items(parser: argparse.ArgumentParser, flag: str, metavar: str, help_item: str, help_all: str) -> None:
+    """Add a mutually exclusive group with --flag (repeatable) and --all."""
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        f"--{flag}",
+        action="append",
+        metavar=metavar,
+        help=help_item,
+    )
+    group.add_argument(
+        "--all",
+        action="store_true",
+        help=help_all,
+    )
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -49,30 +65,30 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     gen_parser = subparsers.add_parser("generate", help="Generate StarDict dictionaries")
-    gen_parser.add_argument(
-        "--engrish-type",
-        action="append",
-        required=True,
+    _add_all_or_items(
+        gen_parser,
+        flag="engrish-type",
         metavar="FORM",
-        help=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}, all",
+        help_item=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}",
+        help_all="Build all configured locales combined",
     )
 
     epub_parser = subparsers.add_parser("epub", help="Generate sampler EPUB for existing dictionaries")
-    epub_parser.add_argument(
-        "--dict",
-        action="append",
-        required=True,
+    _add_all_or_items(
+        epub_parser,
+        flag="dict",
         metavar="FORM",
-        help="Dictionary form to generate EPUB for (e.g. ang+en), or 'all' for every existing dictionary. May be specified multiple times.",
+        help_item="Dictionary form to generate EPUB for (e.g. ang+en). May be specified multiple times.",
+        help_all="Generate EPUBs for all existing dictionaries",
     )
 
     add_lang_parser = subparsers.add_parser("add-language", help="Add languages to engrish.json config")
-    add_lang_parser.add_argument(
-        "--lang",
-        action="append",
-        required=True,
+    _add_all_or_items(
+        add_lang_parser,
+        flag="lang",
         metavar="CODE",
-        help="ISO language code to add (e.g. fr, de, es), or 'all'. May be specified multiple times.",
+        help_item="ISO language code to add (e.g. fr, de, es). May be specified multiple times.",
+        help_all="Add every language from the dump to the config",
     )
 
     subparsers.add_parser(
@@ -92,23 +108,23 @@ def main() -> int:
     if args.command == "generate":
         from .generate import process_form
 
-        for form in args.engrish_type:
-            if form == "all":
-                all_form = "+".join(ALL_LOCALES)
-                process_form(all_form, _parse_form(all_form))
-            else:
+        if args.all:
+            all_form = "+".join(ALL_LOCALES)
+            process_form(all_form, _parse_form(all_form))
+        else:
+            for form in args.engrish_type:
                 locales = _parse_form(form)
                 process_form(form, locales)
 
     elif args.command == "epub":
         from .epub import run as run_epub
 
-        return run_epub(args.dict)
+        return run_epub(args.dict, all_dicts=args.all)
 
     elif args.command == "add-language":
         from .add_language import run as run_add_language
 
-        return run_add_language(args.lang)
+        return run_add_language(args.lang, all_langs=args.all)
 
     elif args.command == "language-stats":
         from .stats import run

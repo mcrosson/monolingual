@@ -28,7 +28,7 @@ def _save_config(cfg: dict[str, dict[str, str]]) -> None:
     )
 
 
-def run(langs: list[str]) -> int:
+def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
     """Resolve language codes from the dump and add them to engrish.json."""
     from wikidict import download, parse
 
@@ -42,8 +42,7 @@ def run(langs: list[str]) -> int:
 
     cfg = _load_config()
 
-    # Expand "all"
-    if "all" in langs:
+    if all_langs:
         langs = sorted(code_to_name.keys())
         log.info("Adding all %d languages", len(langs))
 
