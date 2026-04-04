@@ -391,8 +391,28 @@ def test_add_language(engrish_pipeline: dict[str, Path], tmp_path: Path) -> None
         # Unknown code should fail
         result = add_lang.run(["zzz_invalid"], all_langs=False)
         assert result == 1
+        # Add English — should work like any other language
+        tmp_config.write_text("{}", encoding="utf-8")
+        result = add_lang.run(["en"], all_langs=False)
+        assert result == 0
+
+        cfg = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "en" in cfg["languages"]
+        assert cfg["languages"]["en"]["wiktionary_section"] == "english"
+        assert "fonts" in cfg["languages"]["en"]
     finally:
         add_lang._ENGRISH_JSON = original
+
+
+def test_en_retains_native_head_sections() -> None:
+    """When 'en' is in engrish.json, it must keep its native head_sections
+    including 'translingual' — the ENGRISH_MODE guard must not overwrite them."""
+    from wikidict.lang import head_sections
+
+    assert "en" in head_sections, "en should be a registered locale"
+    assert "translingual" in head_sections["en"], (
+        "en should retain 'translingual' in head_sections even when in engrish.json"
+    )
 
 
 # ---------------------------------------------------------------------------

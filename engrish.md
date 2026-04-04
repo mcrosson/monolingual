@@ -71,6 +71,8 @@ Dictionaries are written to `data/engrish/<form>/`, where `<form>` is the locale
 
 The `seed_fonts` key lists fonts that are always downloaded and checked first during font detection. Seed fonts resolve characters (Latin, Greek, Cyrillic, common symbols, etc.) that can't be mapped to a script-specific font via the name-prefix heuristic. If `add-language` reports unmatched characters that should be covered by a general-purpose font, adding that font to `seed_fonts` is the correct fix.
 
+The `epub_base_fonts` key lists fonts that are always included in EPUB output regardless of which locales are in the dictionary. This ensures the EPUB can render its English prose and UI text.
+
 When multiple fonts cover the same characters, font detection uses a deterministic tiebreak: Sans over Serif, then smaller cmap (more targeted font) over larger, then alphabetical. This means a script-specific font like NotoSansArabic will always win over a general font like NotoSans for Arabic characters, and NotoSans will win over NotoSansMath for characters both cover since NotoSans has the smaller cmap.
 
 ## Testing
