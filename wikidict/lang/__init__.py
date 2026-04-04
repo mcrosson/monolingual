@@ -24,7 +24,7 @@ _ALL_LOCALES = {
 # non-engrish use of wikidict is unaffected.
 _ENGRISH_JSON = Path(__file__).parent.parent.parent / "engrish" / "engrish.json"
 if os.environ.get("ENGRISH_MODE") and _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
-    _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8"))
+    _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")).get("languages", {})
     _en_module = _ALL_LOCALES["en"]
     for _code, _cfg in _engrish_cfg.items():
         if _code in _ALL_LOCALES:

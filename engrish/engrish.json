@@ -1,172 +1,351 @@
 {
-    "ang": {
-        "wiktionary_section": "old english",
-        "display_name": "Old English",
-        "fonts": ["NotoSans", "NotoSansRunic"]
-    },
-    "enm": {
-        "wiktionary_section": "middle english",
-        "display_name": "Middle English",
-        "fonts": ["NotoSans"]
-    },
-    "it": {
-        "wiktionary_section": "italian",
-        "display_name": "Italian",
-        "fonts": ["NotoSans"]
-    },
-    "ar": {
-        "wiktionary_section": "arabic",
-        "display_name": "Arabic",
-        "fonts": ["NotoSans", "NotoSansArabic", "NotoSansHebrew", "NotoSansSyriac"]
-    },
-    "es": {
-        "wiktionary_section": "spanish",
-        "display_name": "Spanish",
-        "fonts": ["NotoSans"]
-    },
-    "de": {
-        "wiktionary_section": "german",
-        "display_name": "German",
-        "fonts": ["NotoSans", "NotoSansRunic"]
-    },
-    "fr": {
-        "wiktionary_section": "french",
-        "display_name": "French",
-        "fonts": ["NotoSans"]
-    },
-    "la": {
-        "wiktionary_section": "latin",
-        "display_name": "Latin",
-        "fonts": ["NotoSans"]
-    },
-    "ru": {
-        "wiktionary_section": "russian",
-        "display_name": "Russian",
-        "fonts": ["NotoSans"]
-    },
-    "grc": {
-        "wiktionary_section": "ancient greek",
-        "display_name": "Ancient Greek",
-        "fonts": ["NotoSans"]
-    },
-    "el": {
-        "wiktionary_section": "greek",
-        "display_name": "Greek",
-        "fonts": ["NotoSans"]
-    },
-    "non": {
-        "wiktionary_section": "old norse",
-        "display_name": "Old Norse",
-        "fonts": ["NotoSans", "NotoSansRunic"]
-    },
-    "fro": {
-        "wiktionary_section": "old french",
-        "display_name": "Old French",
-        "fonts": ["NotoSans", "NotoSansHebrew"]
-    },
-    "frm": {
-        "wiktionary_section": "middle french",
-        "display_name": "Middle French",
-        "fonts": ["NotoSans"]
-    },
-    "sga": {
-        "wiktionary_section": "old irish",
-        "display_name": "Old Irish",
-        "fonts": ["NotoSans", "NotoSansOgham"]
-    },
-    "got": {
-        "wiktionary_section": "gothic",
-        "display_name": "Gothic",
-        "fonts": ["NotoSans", "NotoSansGothic", "NotoSansRunic"]
-    },
-    "sa": {
-        "wiktionary_section": "sanskrit",
-        "display_name": "Sanskrit",
-        "fonts": ["NotoSans", "NotoSansDevanagari", "NotoSansBengali", "NotoSansSinhala", "NotoSansTelugu", "NotoSansGujarati", "NotoSansGurmukhi", "NotoSansMyanmar", "NotoSansThai", "NotoSansBrahmi", "NotoSansBalinese", "NotoSansJavanese", "NotoSansKannada", "NotoSansKhmer", "NotoSansLao", "NotoSansMalayalam", "NotoSansOriya", "NotoSansTaiTham", "NotoSansTamil", "NotoSansTibetan"]
-    },
-    "cu": {
-        "wiktionary_section": "old church slavonic",
-        "display_name": "Old Church Slavonic",
-        "fonts": ["NotoSans", "NotoSansGlagolitic"]
-    },
-    "nci": {
-        "wiktionary_section": "classical nahuatl",
-        "display_name": "Classical Nahuatl",
-        "fonts": ["NotoSans"]
-    },
-    "egy": {
-        "wiktionary_section": "egyptian",
-        "display_name": "Egyptian",
-        "fonts": ["NotoSans", "NotoSansEgyptianHieroglyphs"]
-    },
-    "akk": {
-        "wiktionary_section": "akkadian",
-        "display_name": "Akkadian",
-        "fonts": ["NotoSans", "NotoSansCuneiform"]
-    },
-    "cop": {
-        "wiktionary_section": "coptic",
-        "display_name": "Coptic",
-        "fonts": ["NotoSans", "NotoSansCoptic"]
-    },
-    "arc": {
-        "wiktionary_section": "aramaic",
-        "display_name": "Aramaic",
-        "fonts": ["NotoSans", "NotoSansHebrew", "NotoSansSyriac", "NotoSansImperialAramaic", "NotoSansHatran"]
-    },
-    "syc": {
-        "wiktionary_section": "classical syriac",
-        "display_name": "Classical Syriac",
-        "fonts": ["NotoSans", "NotoSansHebrew", "NotoSansSyriac"]
-    },
-    "he": {
-        "wiktionary_section": "hebrew",
-        "display_name": "Hebrew",
-        "fonts": ["NotoSans", "NotoSansHebrew", "NotoSansPhoenician"]
-    },
-    "fa": {
-        "wiktionary_section": "persian",
-        "display_name": "Persian",
-        "fonts": ["NotoSans", "NotoSansArabic", "NotoSansHebrew"]
-    },
-    "ja": {
-        "wiktionary_section": "japanese",
-        "display_name": "Japanese",
-        "fonts": ["NotoSans", "NotoSansJP", "NotoSansSC"]
-    },
-    "zh": {
-        "wiktionary_section": "chinese",
-        "display_name": "Chinese",
-        "fonts": ["NotoSans", "NotoSansSC", "NotoSansJP"]
-    },
-    "gez": {
-        "wiktionary_section": "ge'ez",
-        "display_name": "Ge'ez",
-        "fonts": ["NotoSans"]
-    },
-    "pi": {
-        "wiktionary_section": "pali",
-        "display_name": "Pali",
-        "fonts": ["NotoSans", "NotoSansDevanagari", "NotoSansBengali", "NotoSansSinhala", "NotoSansMyanmar", "NotoSansThai", "NotoSansLao", "NotoSansKhmer", "NotoSansTaiTham", "NotoSansBrahmi", "NotoSansChakma"]
-    },
-    "bo": {
-        "wiktionary_section": "tibetan",
-        "display_name": "Tibetan",
-        "fonts": ["NotoSans", "NotoSansTibetan", "NotoSansDevanagari"]
-    },
-    "peo": {
-        "wiktionary_section": "old persian",
-        "display_name": "Old Persian",
-        "fonts": ["NotoSans", "NotoSansOldPersian"]
-    },
-    "pal": {
-        "wiktionary_section": "middle persian",
-        "display_name": "Middle Persian",
-        "fonts": ["NotoSans", "NotoSansInscriptionalPahlavi", "NotoSansManichaean", "NotoSansAvestan"]
-    },
-    "ae": {
-        "wiktionary_section": "avestan",
-        "display_name": "Avestan",
-        "fonts": ["NotoSans", "NotoSansAvestan"]
+    "epub_base_fonts": ["NotoSans"],
+    "seed_fonts": [
+        "NotoSans",
+        "NotoSansMath",
+        "NotoSansSymbols",
+        "NotoSansSymbols2"
+    ],
+    "languages": {
+        "ang": {
+            "wiktionary_section": "old english",
+            "display_name": "Old English",
+            "fonts": [
+                "NotoSans",
+                "NotoSansRunic"
+            ]
+        },
+        "enm": {
+            "wiktionary_section": "middle english",
+            "display_name": "Middle English",
+            "fonts": [
+                "NotoSans"
+            ]
+        },
+        "it": {
+            "wiktionary_section": "italian",
+            "display_name": "Italian",
+            "fonts": [
+                "NotoSans"
+            ]
+        },
+        "ar": {
+            "wiktionary_section": "arabic",
+            "display_name": "Arabic",
+            "fonts": [
+                "NotoSansArabic",
+                "NotoSansHebrew",
+                "NotoSansMath",
+                "NotoSansSymbols2",
+                "NotoSansSyriac"
+            ]
+        },
+        "es": {
+            "wiktionary_section": "spanish",
+            "display_name": "Spanish",
+            "fonts": [
+                "NotoSans"
+            ]
+        },
+        "de": {
+            "wiktionary_section": "german",
+            "display_name": "German",
+            "fonts": [
+                "NotoSans",
+                "NotoSansMath",
+                "NotoSansRunic",
+                "NotoSansSymbols"
+            ]
+        },
+        "fr": {
+            "wiktionary_section": "french",
+            "display_name": "French",
+            "fonts": [
+                "NotoSans",
+                "NotoSansSymbols2"
+            ]
+        },
+        "la": {
+            "wiktionary_section": "latin",
+            "display_name": "Latin",
+            "fonts": [
+                "NotoSans",
+                "NotoSansOldItalic",
+                "NotoSansSymbols",
+                "NotoSansSymbols2"
+            ]
+        },
+        "ru": {
+            "wiktionary_section": "russian",
+            "display_name": "Russian",
+            "fonts": [
+                "NotoSans",
+                "NotoSansMath"
+            ]
+        },
+        "grc": {
+            "wiktionary_section": "ancient greek",
+            "display_name": "Ancient Greek",
+            "fonts": [
+                "NotoSans",
+                "NotoSansCypriot",
+                "NotoSansSymbols2"
+            ]
+        },
+        "el": {
+            "wiktionary_section": "greek",
+            "display_name": "Greek",
+            "fonts": [
+                "NotoSans",
+                "NotoSansSymbols2"
+            ]
+        },
+        "non": {
+            "wiktionary_section": "old norse",
+            "display_name": "Old Norse",
+            "fonts": [
+                "NotoSans",
+                "NotoSansRunic"
+            ]
+        },
+        "fro": {
+            "wiktionary_section": "old french",
+            "display_name": "Old French",
+            "fonts": [
+                "NotoSans",
+                "NotoSansHebrew"
+            ]
+        },
+        "frm": {
+            "wiktionary_section": "middle french",
+            "display_name": "Middle French",
+            "fonts": [
+                "NotoSans"
+            ]
+        },
+        "sga": {
+            "wiktionary_section": "old irish",
+            "display_name": "Old Irish",
+            "fonts": [
+                "NotoSans",
+                "NotoSansOgham"
+            ]
+        },
+        "got": {
+            "wiktionary_section": "gothic",
+            "display_name": "Gothic",
+            "fonts": [
+                "NotoSans",
+                "NotoSansGothic",
+                "NotoSansRunic"
+            ]
+        },
+        "sa": {
+            "wiktionary_section": "sanskrit",
+            "display_name": "Sanskrit",
+            "fonts": [
+                "NotoSans",
+                "NotoSansBalinese",
+                "NotoSansBengali",
+                "NotoSansBhaiksuki",
+                "NotoSansBrahmi",
+                "NotoSansDevanagari",
+                "NotoSansGrantha",
+                "NotoSansGujarati",
+                "NotoSansGurmukhi",
+                "NotoSansJavanese",
+                "NotoSansKaithi",
+                "NotoSansKannada",
+                "NotoSansKhmer",
+                "NotoSansLao",
+                "NotoSansMalayalam",
+                "NotoSansModi",
+                "NotoSansMongolian",
+                "NotoSansMyanmar",
+                "NotoSansNandinagari",
+                "NotoSansNewa",
+                "NotoSansOriya",
+                "NotoSansSaurashtra",
+                "NotoSansSharada",
+                "NotoSansSiddham",
+                "NotoSansSinhala",
+                "NotoSansSoyombo",
+                "NotoSansTaiTham",
+                "NotoSansTakri",
+                "NotoSansTamil",
+                "NotoSansTelugu",
+                "NotoSansThai",
+                "NotoSansTirhuta",
+                "NotoSansZanabazarSquare",
+                "NotoSerifTibetan"
+            ]
+        },
+        "cu": {
+            "wiktionary_section": "old church slavonic",
+            "display_name": "Old Church Slavonic",
+            "fonts": [
+                "NotoSans",
+                "NotoSansGlagolitic"
+            ]
+        },
+        "nci": {
+            "wiktionary_section": "classical nahuatl",
+            "display_name": "Classical Nahuatl",
+            "fonts": [
+                "NotoSans"
+            ]
+        },
+        "egy": {
+            "wiktionary_section": "egyptian",
+            "display_name": "Egyptian",
+            "fonts": [
+                "NotoSans",
+                "NotoSansEgyptianHieroglyphs"
+            ]
+        },
+        "akk": {
+            "wiktionary_section": "akkadian",
+            "display_name": "Akkadian",
+            "fonts": [
+                "NotoSans",
+                "NotoSansCuneiform"
+            ]
+        },
+        "cop": {
+            "wiktionary_section": "coptic",
+            "display_name": "Coptic",
+            "fonts": [
+                "NotoSans",
+                "NotoSansCoptic"
+            ]
+        },
+        "arc": {
+            "wiktionary_section": "aramaic",
+            "display_name": "Aramaic",
+            "fonts": [
+                "NotoSansHatran",
+                "NotoSansHebrew",
+                "NotoSansImperialAramaic",
+                "NotoSansSymbols2",
+                "NotoSansSyriac"
+            ]
+        },
+        "syc": {
+            "wiktionary_section": "classical syriac",
+            "display_name": "Classical Syriac",
+            "fonts": [
+                "NotoSansHebrew",
+                "NotoSansSyriac"
+            ]
+        },
+        "he": {
+            "wiktionary_section": "hebrew",
+            "display_name": "Hebrew",
+            "fonts": [
+                "NotoSansHebrew",
+                "NotoSansPhoenician",
+                "NotoSansSymbols2"
+            ]
+        },
+        "fa": {
+            "wiktionary_section": "persian",
+            "display_name": "Persian",
+            "fonts": [
+                "NotoSans",
+                "NotoSansArabic",
+                "NotoSansHebrew",
+                "NotoSansMath"
+            ]
+        },
+        "ja": {
+            "wiktionary_section": "japanese",
+            "display_name": "Japanese",
+            "fonts": [
+                "NotoSans",
+                "NotoSansJP",
+                "NotoSansMath",
+                "NotoSansSC",
+                "NotoSansSymbols",
+                "NotoSansSymbols2",
+                "NotoSansTC",
+                "NotoSerifHentaigana"
+            ]
+        },
+        "zh": {
+            "wiktionary_section": "chinese",
+            "display_name": "Chinese",
+            "fonts": [
+                "NotoSans",
+                "NotoSansArabic",
+                "NotoSansJP",
+                "NotoSansKR",
+                "NotoSansMath",
+                "NotoSansSC",
+                "NotoSansSymbols",
+                "NotoSansSymbols2",
+                "NotoSansTC"
+            ]
+        },
+        "gez": {
+            "wiktionary_section": "ge'ez",
+            "display_name": "Ge'ez",
+            "fonts": [
+                "NotoSansEthiopic"
+            ]
+        },
+        "pi": {
+            "wiktionary_section": "pali",
+            "display_name": "Pali",
+            "fonts": [
+                "NotoSans",
+                "NotoSansDevanagari",
+                "NotoSansBengali",
+                "NotoSansSinhala",
+                "NotoSansMyanmar",
+                "NotoSansThai",
+                "NotoSansLao",
+                "NotoSansKhmer",
+                "NotoSansTaiTham",
+                "NotoSansBrahmi",
+                "NotoSansChakma"
+            ]
+        },
+        "bo": {
+            "wiktionary_section": "tibetan",
+            "display_name": "Tibetan",
+            "fonts": [
+                "NotoSans",
+                "NotoSansDevanagari",
+                "NotoSerifTibetan"
+            ]
+        },
+        "peo": {
+            "wiktionary_section": "old persian",
+            "display_name": "Old Persian",
+            "fonts": [
+                "NotoSansOldPersian"
+            ]
+        },
+        "pal": {
+            "wiktionary_section": "middle persian",
+            "display_name": "Middle Persian",
+            "fonts": [
+                "NotoSans",
+                "NotoSansAvestan",
+                "NotoSansInscriptionalPahlavi",
+                "NotoSansInscriptionalParthian",
+                "NotoSansManichaean"
+            ]
+        },
+        "ae": {
+            "wiktionary_section": "avestan",
+            "display_name": "Avestan",
+            "fonts": [
+                "NotoSans",
+                "NotoSansAvestan",
+                "NotoSansDevanagari",
+                "NotoSansGujarati"
+            ]
+        }
     }
 }

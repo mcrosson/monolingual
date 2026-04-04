@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from .config import DISPLAY_ORDER, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
+from .config import DISPLAY_ORDER, EPUB_BASE_FONTS, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
 from .merge import parse_df
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
@@ -49,11 +49,9 @@ def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
     Raises if any locale is missing the 'fonts' field or references a font
     file not present in the fonts directory.
     """
-    needed: set[str] = set()
+    needed: set[str] = set(EPUB_BASE_FONTS)
     for locale in locales:
         if locale == "en":
-            # 'en' is implicit (not in engrish.json) — definitions are English,
-            # covered by NotoSans which every other locale already includes.
             continue
         if locale not in _ENGRISH_CFG:
             raise ValueError(f"Locale '{locale}' not found in engrish.json")
@@ -63,9 +61,6 @@ def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
                 f"Locale '{locale}' is missing the 'fonts' field in engrish.json"
             )
         needed.update(cfg["fonts"])
-
-    if not needed:
-        needed.add("NotoSans")
 
     missing = needed - set(_FONT_INDEX)
     if missing:

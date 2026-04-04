@@ -67,7 +67,11 @@ Dictionaries are written to `data/engrish/<form>/`, where `<form>` is the locale
 
 ## Config
 
-`engrish/engrish.json` defines which languages to extract from the English Wiktionary. Each entry maps an ISO language code to its Wiktionary section heading and display name. Use `add-language` to populate it.
+`engrish/engrish.json` defines which languages to extract from the English Wiktionary. The `languages` key maps ISO language codes to their Wiktionary section heading, display name, and required fonts. Use `add-language` to populate it.
+
+The `seed_fonts` key lists fonts that are always downloaded and checked first during font detection. Seed fonts resolve characters (Latin, Greek, Cyrillic, common symbols, etc.) that can't be mapped to a script-specific font via the name-prefix heuristic. If `add-language` reports unmatched characters that should be covered by a general-purpose font, adding that font to `seed_fonts` is the correct fix.
+
+When multiple fonts cover the same characters, font detection uses a deterministic tiebreak: Sans over Serif, then smaller cmap (more targeted font) over larger, then alphabetical. This means a script-specific font like NotoSansArabic will always win over a general font like NotoSans for Arabic characters, and NotoSans will win over NotoSansMath for characters both cover since NotoSans has the smaller cmap.
 
 ## Testing
 

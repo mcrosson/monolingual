@@ -380,9 +380,9 @@ def test_add_language(engrish_pipeline: dict[str, Path], tmp_path: Path) -> None
         assert result == 0
 
         cfg = json.loads(tmp_config.read_text(encoding="utf-8"))
-        assert "fr" in cfg
-        assert cfg["fr"]["wiktionary_section"] == "french"
-        assert cfg["fr"]["display_name"] == "French"
+        assert "fr" in cfg["languages"]
+        assert cfg["languages"]["fr"]["wiktionary_section"] == "french"
+        assert cfg["languages"]["fr"]["display_name"] == "French"
 
         # Idempotent — adding again should skip
         result = add_lang.run(["fr"], all_langs=False)

@@ -15,13 +15,13 @@ log = logging.getLogger(__name__)
 _ENGRISH_JSON = Path(__file__).parent / "engrish.json"
 
 
-def _load_config() -> dict[str, dict[str, str]]:
+def _load_config() -> dict:
     if _ENGRISH_JSON.exists():
         return json.loads(_ENGRISH_JSON.read_text(encoding="utf-8"))
     return {}
 
 
-def _save_config(cfg: dict[str, dict[str, str]]) -> None:
+def _save_config(cfg: dict) -> None:
     _ENGRISH_JSON.write_text(
         json.dumps(cfg, indent=4, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -41,6 +41,7 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
     code_to_name = {code: name for name, code in name_to_code.items()}
 
     cfg = _load_config()
+    languages = cfg.setdefault("languages", {})
 
     if all_langs:
         langs = sorted(code_to_name.keys())
@@ -53,7 +54,7 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
         if code == "en":
             log.info("Skipping 'en' — always present as the base language")
             continue
-        if code in cfg:
+        if code in languages:
             log.info("Skipping '%s' — already configured", code)
             continue
         if code not in code_to_name:
@@ -70,12 +71,22 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
         log.info("Nothing to add")
         return 0
 
+    from .update_fonts import collect_headword_chars_batch, detect_fonts
+
+    # Single parallel scan of the dump for ALL languages being added.
+    section_names = [name for _, name in to_add]
+    log.info("Scanning dump for %d language(s)...", len(section_names))
+    all_chars = collect_headword_chars_batch(section_names, db_path)
+
     for code, name in to_add:
-        cfg[code] = {
+        log.info("Detecting fonts for %s (%s)...", code, name)
+        fonts = detect_fonts(name, db_path, chars=all_chars[name])
+        languages[code] = {
             "wiktionary_section": name.lower(),
             "display_name": name,
+            "fonts": fonts,
         }
-        log.info("Added: %s (%s)", code, name)
+        log.info("Added: %s (%s) — fonts: %s", code, name, ", ".join(fonts))
 
     _save_config(cfg)
     log.info("Updated %s — %d language(s) added", _ENGRISH_JSON, len(to_add))

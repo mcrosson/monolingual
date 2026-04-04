@@ -37,7 +37,7 @@ ASSET_CHECKSUM_ALGO = "sha256"
 _engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
 LOCALE_ORIGIN: dict[str, str] = {}
 if _engrish_json.exists():
-    LOCALE_ORIGIN.update({code: "en" for code in json.loads(_engrish_json.read_text(encoding="utf-8"))})
+    LOCALE_ORIGIN.update({code: "en" for code in json.loads(_engrish_json.read_text(encoding="utf-8")).get("languages", {})})
 LOCALE_ORIGIN["fro"] = "fr"  # Old French uses the French Wiktionary
 
 # Dictionaries known to be problematic about the number of chars in MobiPocket

@@ -7,9 +7,12 @@ import os
 from pathlib import Path
 
 _ENGRISH_JSON = Path(__file__).parent / "engrish.json"
-_ENGRISH_CFG: dict[str, dict[str, str]] = (
+_ENGRISH_RAW: dict = (
     json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")) if _ENGRISH_JSON.exists() else {}
 )
+_ENGRISH_CFG: dict[str, dict[str, str]] = _ENGRISH_RAW.get("languages", {})
+EPUB_BASE_FONTS: list[str] = _ENGRISH_RAW.get("epub_base_fonts", [])
+SEED_FONTS: list[str] = _ENGRISH_RAW.get("seed_fonts", [])
 
 # All known locale codes: "en" (always present) + everything in the config
 ALL_LOCALES = ["en"] + list(_ENGRISH_CFG)

@@ -31,6 +31,6 @@ from pathlib import Path
 
 _engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
 if _engrish_json.exists():
-    for _code in json.loads(_engrish_json.read_text(encoding="utf-8")):
+    for _code in json.loads(_engrish_json.read_text(encoding="utf-8")).get("languages", {}):
         if _code not in namespaces and "en" in namespaces:
             namespaces[_code] = list(namespaces["en"])
