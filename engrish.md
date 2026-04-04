@@ -55,7 +55,9 @@ Global flag — can be used with any subcommand. Keeps the decompressed Wiktiona
 ./venv/bin/python engrish.py epub --all
 ```
 
-Creates a test EPUB with sample entries from existing dictionaries.
+Creates a sampler EPUB for smoke-testing dictionary rendering on your eBook reader. Each EPUB includes a cover, summary table, stress test with the largest entries, cross-language shared entries (for merged dictionaries), per-locale spot checks, and a missing words analysis. Use these to verify headwords, alternates, and pronunciations render correctly with the configured fonts before deploying the StarDict files.
+
+Fonts included in the EPUB come from the `epub_base_fonts` config (always included) plus each locale's `fonts` list. Run `update-fonts` before generating EPUBs to ensure all required font files are on disk.
 
 ### `--no-cache`
 
