@@ -30,15 +30,15 @@ _CONTAINER_XML = """\
 </container>
 """
 
-_CHARIS_CSS = """\
+_EPUB_CSS = """\
 @font-face {
-  font-family: 'Charis';
+  font-family: 'Gentium';
   font-weight: 400;
   font-style: normal;
-  src: url('fonts/Charis-Regular.woff') format('woff');
+  src: url('fonts/Gentium-Regular.woff') format('woff');
 }
 body {
-  font-family: 'Charis', serif;
+  font-family: 'Gentium', serif;
 }
 h1 {
   text-decoration: underline;
@@ -452,11 +452,11 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
     ncx = env.get_template("toc.ncx.j2").render(form=form, chapters=chapters)
 
     # -- Font --
-    font_path = FONTS_DIR / "Charis-Regular.woff"
+    font_path = FONTS_DIR / "Gentium-Regular.woff"
     if not font_path.exists():
         raise FileNotFoundError(
             f"Required font not found: {font_path}\n"
-            f"Download Charis SIL from https://software.sil.org/charis/ "
+            f"Download Gentium from https://software.sil.org/gentium/ "
             f"and place the web font at {font_path}"
         )
     font_data = font_path.read_bytes()
@@ -468,8 +468,8 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
         zf.writestr("META-INF/container.xml", _CONTAINER_XML, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/styles.css", _CHARIS_CSS, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/fonts/Charis-Regular.woff", font_data, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("OEBPS/styles.css", _EPUB_CSS, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("OEBPS/fonts/Gentium-Regular.woff", font_data, compress_type=zipfile.ZIP_STORED)
         for filename, html in chapter_html.items():
             zf.writestr(f"OEBPS/{filename}", html, compress_type=zipfile.ZIP_DEFLATED)
 

@@ -184,7 +184,7 @@ def test_epub_structure(engrish_epubs: dict[str, Path], form: str) -> None:
         assert "OEBPS/toc.ncx" in names
         assert "OEBPS/styles.css" in names
         assert "OEBPS/cover.html" in names
-        assert "OEBPS/fonts/Charis-Regular.woff" in names
+        assert "OEBPS/fonts/Gentium-Regular.woff" in names
         assert "OEBPS/cover.html" in names
         assert "OEBPS/summary.html" in names
         assert "OEBPS/stress_test.html" in names
