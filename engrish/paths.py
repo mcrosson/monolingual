@@ -45,7 +45,11 @@ def engrish_form_dir(form: str) -> Path:
 
 
 def dict_base_name(form: str, date: str, noetym: bool = False) -> str:
-    """Return the StarDict folder/file base name for a given form and snapshot date."""
+    """Return the StarDict folder/file base name for a given form and snapshot date.
+
+    The '-en' suffix denotes the EN Wiktionary source dump (all engrish
+    dictionaries extract from en.wiktionary), not the Modern English locale.
+    """
     suffix = "-noetym" if noetym else ""
     return f"{form.replace('+', '_')}-en{suffix}-{date}"
 

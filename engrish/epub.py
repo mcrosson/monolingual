@@ -51,8 +51,6 @@ def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
     """
     needed: set[str] = set(EPUB_BASE_FONTS)
     for locale in locales:
-        if locale == "en":
-            continue
         if locale not in _ENGRISH_CFG:
             raise ValueError(f"Locale '{locale}' not found in engrish.json")
         cfg = _ENGRISH_CFG[locale]

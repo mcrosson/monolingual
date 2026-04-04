@@ -14,14 +14,13 @@ _ENGRISH_CFG: dict[str, dict[str, str]] = _ENGRISH_RAW.get("languages", {})
 EPUB_BASE_FONTS: list[str] = _ENGRISH_RAW.get("epub_base_fonts", [])
 SEED_FONTS: list[str] = _ENGRISH_RAW.get("seed_fonts", [])
 
-# All known locale codes: "en" (always present) + everything in the config
-ALL_LOCALES = ["en"] + list(_ENGRISH_CFG)
+# All known locale codes — driven entirely by the config
+ALL_LOCALES = list(_ENGRISH_CFG)
 
 # Human-readable names for each locale
-FORM_NAMES: dict[str, str] = {"en": "Modern English"}
-FORM_NAMES.update({code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items()})
+FORM_NAMES: dict[str, str] = {code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items()}
 
-# Display order: en first, then config order
+# Display order: config insertion order
 DISPLAY_ORDER = list(ALL_LOCALES)
 
 DATA_DIR = Path(os.getenv("CWD", "")) / "data"

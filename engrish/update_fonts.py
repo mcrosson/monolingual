@@ -16,11 +16,13 @@ from .config import FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
 
 log = logging.getLogger(__name__)
 
-# GitHub raw base URLs for the two Noto Sans font repositories.
+# GitHub raw base URLs for font repositories.
 _NOTO_BASE = "https://raw.githubusercontent.com/notofonts/notofonts.github.io/main/fonts"
 _NOTO_API = "https://api.github.com/repos/notofonts/notofonts.github.io/contents/fonts"
 _CJK_BASE = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF"
 _CJK_API = "https://api.github.com/repos/notofonts/noto-cjk/contents/Sans/SubsetOTF"
+_EMOJI_BASE = "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts"
+_EMOJI_API = "https://api.github.com/repos/googlefonts/noto-emoji/contents/fonts"
 
 
 def _existing_stems(fonts_dir: Path) -> set[str]:
@@ -72,6 +74,11 @@ def _candidate_urls(stem: str) -> list[tuple[str, str]]:
                 f"{serif}-Regular.ttf",
             ),
         ])
+    # googlefonts/noto-emoji — color emoji font
+    urls.extend([
+        (f"{_EMOJI_BASE}/{stem}-noflags.ttf", f"{stem}-noflags.ttf"),
+        (f"{_EMOJI_BASE}/{stem}.ttf", f"{stem}.ttf"),
+    ])
     return urls
 
 
@@ -151,6 +158,17 @@ def _discover_available_stems() -> tuple[set[str], set[str]]:
             )
     except requests.RequestException:
         log.warning("Could not query noto-cjk repo for CJK font discovery")
+    # Emoji repo — font files in the fonts/ directory
+    try:
+        resp = requests.get(_EMOJI_API, timeout=15)
+        if resp.status_code == 200:
+            for item in resp.json():
+                if item.get("type") == "file" and item["name"].endswith(".ttf"):
+                    stem = item["name"].split("-")[0].split(".")[0]
+                    if stem.startswith("Noto"):
+                        main_stems.add(stem)
+    except requests.RequestException:
+        log.warning("Could not query noto-emoji repo for emoji font discovery")
     _cached_stems = (main_stems | cjk_stems, cjk_stems)
     return _cached_stems
 
@@ -201,16 +219,36 @@ def _scan_chunk(
 
 
 def collect_headword_chars_batch(
-    section_names: list[str],
+    locale_codes: list[str],
     db_path: Path,
+    *,
+    wiktionary_sections: dict[str, str] | None = None,
 ) -> dict[str, set[str]]:
     """Collect headword chars for one or more languages in a single parallel scan.
 
+    *locale_codes* is a list of language codes (e.g. ``["en", "ang", "fr"]``).
+    The wiktionary L2 heading for each code is resolved from the engrish
+    config.  For codes not yet in the config (being added), pass
+    *wiktionary_sections* as a ``{code: section}`` mapping.
+
     Partitions the dump by rowid range across ``os.cpu_count()`` worker
     processes, each scanning for all requested languages simultaneously.
-    Returns ``{section_name: set_of_non_ascii_chars}``.
+    Returns ``{code: set_of_non_ascii_chars}``.
     """
-    targets_lower = [n.lower() for n in section_names]
+    # Resolve wiktionary section headings for each code.
+    sections: dict[str, str] = {}
+    for code in locale_codes:
+        if wiktionary_sections and code in wiktionary_sections:
+            sections[code] = wiktionary_sections[code]
+        elif code in _ENGRISH_CFG:
+            sections[code] = _ENGRISH_CFG[code]["wiktionary_section"]
+        else:
+            raise ValueError(
+                f"Locale '{code}' not in config and no wiktionary_section provided"
+            )
+
+    targets_lower = [s.lower() for s in sections.values()]
+    code_for_target = {s.lower(): code for code, s in sections.items()}
     db_str = str(db_path)
 
     # Determine rowid range for partitioning.
@@ -220,13 +258,12 @@ def collect_headword_chars_batch(
         cur.execute("SELECT MIN(rowid), MAX(rowid) FROM pages WHERE namespace_id = 0")
         row = cur.fetchone()
         if row is None or row[0] is None:
-            return {n: set() for n in section_names}
+            return {code: set() for code in locale_codes}
         lo, hi = row
     finally:
         con.close()
 
     n_workers = os.cpu_count() or 4
-    # +1 so the last chunk includes hi
     chunk_size = (hi - lo + 2) // n_workers
     chunks = []
     for i in range(n_workers):
@@ -242,8 +279,8 @@ def collect_headword_chars_batch(
             for t in targets_lower:
                 merged[t].update(partial[t])
 
-    # Return keyed by the original (non-lowered) section names.
-    return {name: merged[name.lower()] for name in section_names}
+    # Return keyed by locale code.
+    return {code: merged[sections[code].lower()] for code in locale_codes}
 
 
 def _best_stem_for_char(ch: str, confirmed: set[str]) -> str | None:
@@ -324,31 +361,32 @@ def _cmap_for_stem(stem: str, fonts_dir: Path) -> set[int]:
     return cmap
 
 
-def detect_fonts(section_name: str, db_path: Path, chars: set[str] | None = None) -> list[str]:
-    """Detect NotoSans font stems needed for a language.
+def detect_fonts(
+    locale_code: str,
+    db_path: Path,
+    chars: set[str] | None = None,
+    *,
+    wiktionary_section: str | None = None,
+) -> list[str]:
+    """Detect font stems needed for a language.
+
+    *locale_code* is the ISO language code (e.g. ``"en"``, ``"ang"``).
+    The wiktionary L2 heading is resolved from the config.  For codes
+    not yet in the config (being added), pass *wiktionary_section*.
 
     If *chars* is provided (from a prior ``collect_headword_chars_batch``
-    call), uses those directly.  Otherwise performs a full parallel scan
-    for this single language.
-
-    Derives candidate font stems from Unicode character names and validates
-    each against the set of available fonts (queried from GitHub in two API
-    calls, plus any fonts already on disk).
-
-    Characters that don't match any stem via name-prefix are checked against
-    the cmaps of fonts already in the result set (using fonttools).  Only
-    characters that are truly uncovered — not present in any matched font's
-    cmap — trigger CJK font inclusion or user warnings.
+    call), uses those directly.  Otherwise performs a full parallel scan.
 
     Returns exactly the set of validated stems that cover the headword
     characters — nothing hardcoded, nothing assumed.
     """
     if chars is None:
-        chars = collect_headword_chars_batch([section_name], db_path)[section_name]
+        ws = {locale_code: wiktionary_section} if wiktionary_section else None
+        chars = collect_headword_chars_batch([locale_code], db_path, wiktionary_sections=ws)[locale_code]
     if not chars:
         return []
 
-    log.info("Found %d unique non-ASCII headword characters for %s", len(chars), section_name)
+    log.info("Found %d unique non-ASCII headword characters for %s", len(chars), locale_code)
 
     # --- Stage 0: seed fonts ---
     # Download seed fonts if missing.  These are checked first via cmap to

@@ -51,9 +51,6 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
     errors: list[str] = []
     to_add: list[tuple[str, str]] = []
     for code in langs:
-        if code == "en":
-            log.info("Skipping 'en' — always present as the base language")
-            continue
         if code in languages:
             log.info("Skipping '%s' — already configured", code)
             continue
@@ -74,13 +71,14 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
     from .update_fonts import collect_headword_chars_batch, detect_fonts
 
     # Single parallel scan of the dump for ALL languages being added.
-    section_names = [name for _, name in to_add]
-    log.info("Scanning dump for %d language(s)...", len(section_names))
-    all_chars = collect_headword_chars_batch(section_names, db_path)
+    codes_to_add = [code for code, _ in to_add]
+    ws_map = {code: name.lower() for code, name in to_add}
+    log.info("Scanning dump for %d language(s)...", len(codes_to_add))
+    all_chars = collect_headword_chars_batch(codes_to_add, db_path, wiktionary_sections=ws_map)
 
     for code, name in to_add:
         log.info("Detecting fonts for %s (%s)...", code, name)
-        fonts = detect_fonts(name, db_path, chars=all_chars[name])
+        fonts = detect_fonts(code, db_path, chars=all_chars[code], wiktionary_section=name.lower())
         languages[code] = {
             "wiktionary_section": name.lower(),
             "display_name": name,

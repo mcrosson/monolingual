@@ -27,6 +27,11 @@ if os.environ.get("ENGRISH_MODE") and _ENGRISH_JSON.exists() and "en" in _ALL_LO
     _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")).get("languages", {})
     _en_module = _ALL_LOCALES["en"]
     for _code, _cfg in _engrish_cfg.items():
+        if _code == "en":
+            # "en" is the source wikidict module itself — its parsing rules
+            # are already correct.  Just register it in LOCALE_ORIGIN.
+            _wikidict_constants.LOCALE_ORIGIN[_code] = "en"
+            continue
         if _code in _ALL_LOCALES:
             # Overwrite all public attrs from `en` so we use EN wiktionary
             # parsing rules, not the native module's rules.

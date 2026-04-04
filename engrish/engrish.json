@@ -1,12 +1,30 @@
 {
-    "epub_base_fonts": ["NotoSans"],
+    "epub_base_fonts": [
+        "NotoSans"
+    ],
     "seed_fonts": [
+        "NotoColorEmoji",
         "NotoSans",
         "NotoSansMath",
         "NotoSansSymbols",
         "NotoSansSymbols2"
     ],
     "languages": {
+        "en": {
+            "wiktionary_section": "english",
+            "display_name": "Modern English",
+            "fonts": [
+                "NotoColorEmoji",
+                "NotoSans",
+                "NotoSansEgyptianHieroglyphs",
+                "NotoSansJP",
+                "NotoSansMath",
+                "NotoSansRunic",
+                "NotoSansShavian",
+                "NotoSansSymbols",
+                "NotoSansSymbols2"
+            ]
+        },
         "ang": {
             "wiktionary_section": "old english",
             "display_name": "Old English",
@@ -261,6 +279,7 @@
             "wiktionary_section": "japanese",
             "display_name": "Japanese",
             "fonts": [
+                "NotoColorEmoji",
                 "NotoSans",
                 "NotoSansJP",
                 "NotoSansMath",
@@ -275,6 +294,7 @@
             "wiktionary_section": "chinese",
             "display_name": "Chinese",
             "fonts": [
+                "NotoColorEmoji",
                 "NotoSans",
                 "NotoSansArabic",
                 "NotoSansJP",
@@ -282,7 +302,6 @@
                 "NotoSansMath",
                 "NotoSansSC",
                 "NotoSansSymbols",
-                "NotoSansSymbols2",
                 "NotoSansTC"
             ]
         },
