@@ -24,6 +24,7 @@ if _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
     _en_module = _ALL_LOCALES["en"]
     for _code, _cfg in _engrish_cfg.items():
         if _code in _ALL_LOCALES:
+            _ALL_LOCALES[_code].head_sections = (_cfg["wiktionary_section"],)
             continue
         _mod = types.ModuleType(f"wikidict.lang.{_code}")
         for _attr in dir(_en_module):
