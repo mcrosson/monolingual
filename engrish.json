@@ -6,5 +6,97 @@
     "enm": {
         "wiktionary_section": "middle english",
         "display_name": "Middle English"
+    },
+    "it": {
+        "wiktionary_section": "italian",
+        "display_name": "Italian"
+    },
+    "ar": {
+        "wiktionary_section": "arabic",
+        "display_name": "Arabic"
+    },
+    "es": {
+        "wiktionary_section": "spanish",
+        "display_name": "Spanish"
+    },
+    "de": {
+        "wiktionary_section": "german",
+        "display_name": "German"
+    },
+    "fr": {
+        "wiktionary_section": "french",
+        "display_name": "French"
+    },
+    "la": {
+        "wiktionary_section": "latin",
+        "display_name": "Latin"
+    },
+    "ru": {
+        "wiktionary_section": "russian",
+        "display_name": "Russian"
+    },
+    "grc": {
+        "wiktionary_section": "ancient greek",
+        "display_name": "Ancient Greek"
+    },
+    "el": {
+        "wiktionary_section": "greek",
+        "display_name": "Greek"
+    },
+    "non": {
+        "wiktionary_section": "old norse",
+        "display_name": "Old Norse"
+    },
+    "fro": {
+        "wiktionary_section": "old french",
+        "display_name": "Old French"
+    },
+    "frm": {
+        "wiktionary_section": "middle french",
+        "display_name": "Middle French"
+    },
+    "sga": {
+        "wiktionary_section": "old irish",
+        "display_name": "Old Irish"
+    },
+    "got": {
+        "wiktionary_section": "gothic",
+        "display_name": "Gothic"
+    },
+    "sa": {
+        "wiktionary_section": "sanskrit",
+        "display_name": "Sanskrit"
+    },
+    "cu": {
+        "wiktionary_section": "old church slavonic",
+        "display_name": "Old Church Slavonic"
+    },
+    "nci": {
+        "wiktionary_section": "classical nahuatl",
+        "display_name": "Classical Nahuatl"
+    },
+    "egy": {
+        "wiktionary_section": "egyptian",
+        "display_name": "Egyptian"
+    },
+    "akk": {
+        "wiktionary_section": "akkadian",
+        "display_name": "Akkadian"
+    },
+    "cop": {
+        "wiktionary_section": "coptic",
+        "display_name": "Coptic"
+    },
+    "arc": {
+        "wiktionary_section": "aramaic",
+        "display_name": "Aramaic"
+    },
+    "syc": {
+        "wiktionary_section": "classical syriac",
+        "display_name": "Classical Syriac"
+    },
+    "he": {
+        "wiktionary_section": "hebrew",
+        "display_name": "Hebrew"
     }
 }
