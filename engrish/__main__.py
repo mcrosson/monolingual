@@ -112,6 +112,11 @@ def main() -> int:
         help="Show per-language statistics from the EN Wiktionary dump",
     )
 
+    subparsers.add_parser(
+        "update-fonts",
+        help="Download missing Noto Sans fonts referenced in the config",
+    )
+
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
@@ -172,6 +177,11 @@ def main() -> int:
         from .stats import run
 
         return run()
+
+    elif args.command == "update-fonts":
+        from .update_fonts import run as run_update_fonts
+
+        return run_update_fonts()
 
     return 0
 
