@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-_ENGRISH_JSON = Path(__file__).parent.parent / "engrish.json"
+_ENGRISH_JSON = Path(__file__).parent / "engrish.json"
 _ENGRISH_CFG: dict[str, dict[str, str]] = (
     json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")) if _ENGRISH_JSON.exists() else {}
 )
@@ -23,4 +23,4 @@ DISPLAY_ORDER = list(ALL_LOCALES)
 
 DATA_DIR = Path(os.getenv("CWD", "")) / "data"
 ENGRISH_DIR = DATA_DIR / "engrish"
-FONTS_DIR = Path(__file__).parent.parent / "fonts" / "Gentium-7.000" / "web"
+FONTS_DIR = Path(__file__).parent.parent / "fonts" / "NotoSans"

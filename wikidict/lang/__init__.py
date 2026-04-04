@@ -22,7 +22,7 @@ _ALL_LOCALES = {
 # English Wiktionary with definitions in Modern English).
 # Only active when ENGRISH_MODE env var is set (by engrish/__init__.py) so
 # non-engrish use of wikidict is unaffected.
-_ENGRISH_JSON = Path(__file__).parent.parent.parent / "engrish.json"
+_ENGRISH_JSON = Path(__file__).parent.parent.parent / "engrish" / "engrish.json"
 if os.environ.get("ENGRISH_MODE") and _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
     _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8"))
     _en_module = _ALL_LOCALES["en"]

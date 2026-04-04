@@ -230,7 +230,9 @@ def test_epub_structure(engrish_epubs: dict[str, Path], form: str) -> None:
         assert "OEBPS/toc.ncx" in names
         assert "OEBPS/styles.css" in names
         assert "OEBPS/cover.html" in names
-        assert "OEBPS/fonts/Gentium-Regular.woff" in names
+        font_files = [n for n in names if n.startswith("OEBPS/fonts/")]
+        assert font_files, "No font files in EPUB"
+        assert any("NotoSans" in f for f in font_files), "No NotoSans font in EPUB"
         assert "OEBPS/cover.html" in names
         assert "OEBPS/summary.html" in names
         assert "OEBPS/stress_test.html" in names
@@ -592,6 +594,62 @@ def test_no_fixable_orphaned_variants(engrish_pipeline: dict[str, Path], locale:
         f"normalization step may not have run. Examples: "
         + ", ".join(f"'{w}'->'{t}' (should be '{r}')" for w, t, r in fixable[:5])
     )
+
+
+# ---------------------------------------------------------------------------
+# Variant chain resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_variant_chain() -> None:
+    """Verify chain following resolves A -> B -> C when B is variant-only."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["c"]},
+        "c": {"definitions": {"Noun": ["a thing"]}},
+    }
+    defs = {"c"}
+
+    assert _resolve_variant_chain("a", data, defs) == "c"
+    assert _resolve_variant_chain("b", data, defs) == "c"
+    assert _resolve_variant_chain("c", data, defs) == "c"
+
+
+def test_resolve_variant_chain_cycle() -> None:
+    """Cycles must not hang — should return None."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["a"]},
+    }
+
+    assert _resolve_variant_chain("a", data, set()) is None
+
+
+def test_resolve_variant_chain_dead_end() -> None:
+    """Chain ending at an entry with no definitions and no further variants returns None."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {},
+    }
+
+    assert _resolve_variant_chain("a", data, set()) is None
+
+
+def test_resolve_variant_chain_missing_target() -> None:
+    """Chain pointing to a word not in the data returns None."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["nonexistent"]},
+    }
+
+    assert _resolve_variant_chain("a", data, set()) is None
 
 
 # ---------------------------------------------------------------------------

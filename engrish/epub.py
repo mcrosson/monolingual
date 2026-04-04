@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from .config import DISPLAY_ORDER, FONTS_DIR, FORM_NAMES
+from .config import DISPLAY_ORDER, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
 from .merge import parse_df
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
@@ -30,34 +30,92 @@ _CONTAINER_XML = """\
 </container>
 """
 
-_EPUB_CSS = """\
-@font-face {
-  font-family: 'Gentium';
-  font-weight: 400;
-  font-style: normal;
-  src: url('fonts/Gentium-Regular.woff') format('woff');
-}
-body {
-  font-family: 'Gentium', serif;
-}
-h1 {
-  text-decoration: underline;
-}
-h3 {
-  font-weight: normal;
-}
-table {
-  margin: 1em 0;
-}
-th, td {
-  padding: 0.3em 0.8em;
-  text-align: left;
-  border-bottom: 1px solid #999;
-}
-th {
-  background-color: #eee;
-}
-"""
+# Build font index from whatever font files exist in FONTS_DIR.
+# Stem is extracted from filename: "NotoSansArabic[wght].ttf" -> "NotoSansArabic"
+_FONT_INDEX: dict[str, Path] = {}
+for _f in sorted(FONTS_DIR.glob("*")):
+    if _f.suffix in (".ttf", ".otf"):
+        _stem = _f.stem.split("[")[0].split("-")[0]
+        _FONT_INDEX[_stem] = _f
+
+
+def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
+    """Return (font_stem, filename) pairs needed for the given locales.
+
+    Reads the 'fonts' list from each locale's engrish.json entry, unions them,
+    deduplicates, and sorts by file size (smallest first so common scripts
+    appear first in the CSS font-family cascade).
+
+    Raises if any locale is missing the 'fonts' field or references a font
+    file not present in the fonts directory.
+    """
+    needed: set[str] = set()
+    for locale in locales:
+        if locale == "en":
+            # 'en' is implicit (not in engrish.json) — definitions are English,
+            # covered by NotoSans which every other locale already includes.
+            continue
+        if locale not in _ENGRISH_CFG:
+            raise ValueError(f"Locale '{locale}' not found in engrish.json")
+        cfg = _ENGRISH_CFG[locale]
+        if "fonts" not in cfg:
+            raise ValueError(
+                f"Locale '{locale}' is missing the 'fonts' field in engrish.json"
+            )
+        needed.update(cfg["fonts"])
+
+    if not needed:
+        needed.add("NotoSans")
+
+    missing = needed - set(_FONT_INDEX)
+    if missing:
+        raise FileNotFoundError(
+            f"Font files not found in {FONTS_DIR}: {sorted(missing)}"
+        )
+
+    return [
+        (stem, _FONT_INDEX[stem].name)
+        for stem in sorted(needed, key=lambda s: _FONT_INDEX[s].stat().st_size)
+    ]
+
+
+def _build_css(fonts: list[tuple[str, str]]) -> str:
+    """Build CSS with @font-face declarations and font-family cascade."""
+    parts = []
+    for stem, filename in fonts:
+        media_type = "font/otf" if filename.endswith(".otf") else "truetype"
+        fmt = "opentype" if filename.endswith(".otf") else "truetype"
+        parts.append(
+            f"@font-face {{\n"
+            f"  font-family: '{stem}';\n"
+            f"  src: url('fonts/{filename}') format('{fmt}');\n"
+            f"}}"
+        )
+
+    family_list = ", ".join(f"'{stem}'" for stem, _ in fonts) + ", serif"
+    parts.append(
+        f"body {{\n"
+        f"  font-family: {family_list};\n"
+        f"}}\n"
+        f"h1 {{\n"
+        f"  text-decoration: underline;\n"
+        f"}}\n"
+        f"h3 {{\n"
+        f"  font-weight: normal;\n"
+        f"}}\n"
+        f"table {{\n"
+        f"  margin: 1em 0;\n"
+        f"}}\n"
+        f"th, td {{\n"
+        f"  padding: 0.3em 0.8em;\n"
+        f"  text-align: left;\n"
+        f"  border-bottom: 1px solid #999;\n"
+        f"}}\n"
+        f"th {{\n"
+        f"  background-color: #eee;\n"
+        f"}}"
+    )
+    return "\n".join(parts) + "\n"
 
 
 def _locale_label(code: str) -> str:
@@ -447,19 +505,23 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
     missing_content = env.get_template("missing.xhtml.j2").render(locales=missing_locales)
     chapter_html[ch_file] = page_tpl.render(title="Missing", content=missing_content)
 
-    # -- Render OPF and NCX --
-    opf = env.get_template("content.opf.j2").render(form=form, chapters=chapters)
-    ncx = env.get_template("toc.ncx.j2").render(form=form, chapters=chapters)
+    # -- Fonts --
+    fonts = _fonts_for_locales(locales)
+    css = _build_css(fonts)
 
-    # -- Font --
-    font_path = FONTS_DIR / "Gentium-Regular.woff"
-    if not font_path.exists():
-        raise FileNotFoundError(
-            f"Required font not found: {font_path}\n"
-            f"Download Gentium from https://software.sil.org/gentium/ "
-            f"and place the web font at {font_path}"
-        )
-    font_data = font_path.read_bytes()
+    font_data: dict[str, bytes] = {}
+    for stem, filename in fonts:
+        fp = FONTS_DIR / filename
+        if not fp.exists():
+            raise FileNotFoundError(
+                f"Required font not found: {fp}\n"
+                f"Download Noto Sans fonts and place them in {FONTS_DIR}"
+            )
+        font_data[filename] = fp.read_bytes()
+
+    # -- Render OPF and NCX --
+    opf = env.get_template("content.opf.j2").render(form=form, chapters=chapters, fonts=fonts)
+    ncx = env.get_template("toc.ncx.j2").render(form=form, chapters=chapters)
 
     # -- Write EPUB --
     epub_path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,8 +530,9 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
         zf.writestr("META-INF/container.xml", _CONTAINER_XML, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/styles.css", _EPUB_CSS, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/fonts/Gentium-Regular.woff", font_data, compress_type=zipfile.ZIP_STORED)
+        zf.writestr("OEBPS/styles.css", css, compress_type=zipfile.ZIP_DEFLATED)
+        for filename, data in font_data.items():
+            zf.writestr(f"OEBPS/fonts/{filename}", data, compress_type=zipfile.ZIP_STORED)
         for filename, html in chapter_html.items():
             zf.writestr(f"OEBPS/{filename}", html, compress_type=zipfile.ZIP_DEFLATED)
 

@@ -29,7 +29,7 @@ namespaces = {
 import json
 from pathlib import Path
 
-_engrish_json = Path(__file__).parent.parent / "engrish.json"
+_engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
 if _engrish_json.exists():
     for _code in json.loads(_engrish_json.read_text(encoding="utf-8")):
         if _code not in namespaces and "en" in namespaces:

@@ -38,15 +38,30 @@ def _try_strip_combining(target: str, headwords: set[str]) -> str | None:
     return None
 
 
+def _resolve_variant_chain(target: str, data: dict, headwords_with_defs: set[str]) -> str | None:
+    """Follow a chain of variant-only entries until an entry with definitions is found."""
+    seen: set[str] = set()
+    current = target
+    while current not in seen and current in data:
+        seen.add(current)
+        entry = data[current]
+        if entry.get("definitions"):
+            return current
+        targets = entry.get("variants")
+        if not targets:
+            return None
+        current = targets[0]
+    return None
+
+
 def normalize_variant_targets(locale: str) -> None:
     """Rewrite variant targets in a locale's data-*.json so they match headwords.
 
-    Wiktionary often uses annotation diacritics in lemma headwords (Russian
-    stress marks, Greek vowel-length breves, Arabic tashkeel, Latin macrons)
-    that don't appear in the actual entry keys.  For each unresolved variant
-    target, we try stripping combining characters and check if the result
-    matches an existing headword — the headword set is the oracle for what
-    constitutes an annotation vs. a real accent.
+    Two passes:
+    1. Strip combining characters from targets that don't match any headword
+       (handles annotation diacritics like stress marks, vowel length, tashkeel).
+    2. Follow variant chains — if A -> B and B is variant-only pointing to C,
+       rewrite A -> C so the synonym resolves to an entry with definitions.
     """
     render_dir = render_source_dir(locale)
     jsons = sorted(render_dir.glob("data-*.json"))
@@ -58,6 +73,7 @@ def normalize_variant_targets(locale: str) -> None:
     headwords = set(data.keys())
     fixed = 0
 
+    # Pass 1: combining-mark normalization
     for word, entry in data.items():
         variants = entry.get("variants")
         if not variants:
@@ -75,8 +91,33 @@ def normalize_variant_targets(locale: str) -> None:
                 new_variants.append(target)
         entry["variants"] = new_variants
 
-    if fixed:
-        log.info("[%s] Normalized %s variant targets", locale, f"{fixed:,}")
+    # Pass 2: follow variant chains
+    headwords_with_defs = {w for w, e in data.items() if e.get("definitions")}
+    chains_resolved = 0
+
+    for word, entry in data.items():
+        variants = entry.get("variants")
+        if not variants:
+            continue
+        new_variants = []
+        for target in variants:
+            if target in headwords_with_defs:
+                new_variants.append(target)
+                continue
+            resolved = _resolve_variant_chain(target, data, headwords_with_defs)
+            if resolved and resolved != target:
+                new_variants.append(resolved)
+                chains_resolved += 1
+            else:
+                new_variants.append(target)
+        entry["variants"] = new_variants
+
+    total = fixed + chains_resolved
+    if total:
+        if fixed:
+            log.info("[%s] Normalized %s variant targets", locale, f"{fixed:,}")
+        if chains_resolved:
+            log.info("[%s] Resolved %s variant chains", locale, f"{chains_resolved:,}")
         data_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
         # Invalidate convert output so it re-runs with the updated data
         out = output_dir(locale)

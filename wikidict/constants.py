@@ -34,7 +34,7 @@ ASSET_CHECKSUM_ALGO = "sha256"
 # Locales relations
 # Derived languages from engrish.json all use the English Wiktionary as source.
 # Syntax: "locale": "origin locale"
-_engrish_json = Path(__file__).parent.parent / "engrish.json"
+_engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
 LOCALE_ORIGIN: dict[str, str] = {}
 if _engrish_json.exists():
     LOCALE_ORIGIN.update({code: "en" for code in json.loads(_engrish_json.read_text(encoding="utf-8"))})

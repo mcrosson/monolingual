@@ -12,7 +12,7 @@ from .stats import load_language_codes
 
 log = logging.getLogger(__name__)
 
-_ENGRISH_JSON = Path(__file__).parent.parent / "engrish.json"
+_ENGRISH_JSON = Path(__file__).parent / "engrish.json"
 
 
 def _load_config() -> dict[str, dict[str, str]]:

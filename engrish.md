@@ -2,6 +2,11 @@
 
 Build StarDict dictionaries with Modern English definitions from Wiktionary.
 
+## Warnings & Considerations
+
+- **Do not run multiple instances at the same time.** The tool and tests share the same `data/` directory for intermediate files (downloads, parse databases, render output). Running multiple instances simultaneously — or running tests while a generate is in progress — will corrupt data.
+- **Large languages take a long time.** Languages with many entries (e.g. English at ~900K, Spanish at ~640K, Italian at ~560K) can take 20+ minutes to render and convert depending on hardware. Smaller languages (under 10K entries) typically finish in under a minute.
+
 ## Setup
 
 ```bash
@@ -62,7 +67,7 @@ Dictionaries are written to `data/engrish/<form>/`, where `<form>` is the locale
 
 ## Config
 
-`engrish.json` in the project root defines which languages to extract from the English Wiktionary. Each entry maps an ISO language code to its Wiktionary section heading and display name. Use `add-language` to populate it.
+`engrish/engrish.json` defines which languages to extract from the English Wiktionary. Each entry maps an ISO language code to its Wiktionary section heading and display name. Use `add-language` to populate it.
 
 ## Testing
 
