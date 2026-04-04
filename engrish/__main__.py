@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from .config import ALL_LOCALES
@@ -62,6 +63,11 @@ def main() -> int:
         action="store_true",
         help="Delete all cached downloads and pre-processing data before running",
     )
+    parser.add_argument(
+        "--keep-xml",
+        action="store_true",
+        help="Keep the decompressed Wiktionary XML dump after parsing (saves ~3 min on subsequent runs)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     gen_parser = subparsers.add_parser("generate", help="Generate StarDict dictionaries")
@@ -100,6 +106,9 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.keep_xml:
+        os.environ["KEEP_XML"] = "1"
 
     if args.no_cache:
         log.info("Clearing cache for all locales")

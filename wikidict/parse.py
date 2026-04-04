@@ -275,8 +275,9 @@ def main(locale: str) -> int:
     if output.is_file():
         log.info("Already parsed into %s", output)
     elif process(input_file, locale):
-        # Do not keep the (big) XML file
-        input_file.unlink()
+        # Do not keep the (big) XML file unless told to
+        if not os.environ.get("KEEP_XML"):
+            input_file.unlink()
     else:
         ret = 1
 
