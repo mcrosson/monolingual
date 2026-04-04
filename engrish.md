@@ -5,10 +5,9 @@ Build StarDict dictionaries with Modern English definitions from Wiktionary.
 ## Setup
 
 ```bash
-python3.13 -m venv venv
-. venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+python3 -m venv venv
+./venv/bin/pip install -U pip
+./venv/bin/pip install -r requirements.txt
 ```
 
 ## Usage
@@ -16,7 +15,7 @@ pip install -r requirements.txt
 ### See what languages are available
 
 ```bash
-python engrish.py language-stats
+./venv/bin/python engrish.py language-stats
 ```
 
 Downloads and parses the EN Wiktionary dump (if needed), then shows every language with definition counts.
@@ -24,7 +23,7 @@ Downloads and parses the EN Wiktionary dump (if needed), then shows every langua
 ### Add languages to the config
 
 ```bash
-python engrish.py add-language --lang fr --lang de --lang es
+./venv/bin/python engrish.py add-language --lang fr --lang de --lang es
 ```
 
 Looks up the language codes in the dump and adds them to `engrish.json`.
@@ -32,18 +31,23 @@ Looks up the language codes in the dump and adds them to `engrish.json`.
 ### Generate dictionaries
 
 ```bash
-python engrish.py generate --engrish-type ang+en
-python engrish.py generate --engrish-type fr
-python engrish.py generate --all
+./venv/bin/python engrish.py generate --engrish-type ang+en
+./venv/bin/python engrish.py generate --engrish-type fr
+./venv/bin/python engrish.py generate --all
+./venv/bin/python engrish.py generate --all-singles
 ```
 
-Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run.
+Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale.
+
+### `--keep-xml`
+
+Global flag — can be used with any subcommand. Keeps the decompressed Wiktionary XML dump after parsing instead of deleting it. Saves ~3 minutes on subsequent runs by skipping decompression.
 
 ### Generate sampler EPUBs
 
 ```bash
-python engrish.py epub --dict ang+en
-python engrish.py epub --all
+./venv/bin/python engrish.py epub --dict ang+en
+./venv/bin/python engrish.py epub --all
 ```
 
 Creates a test EPUB with sample entries from existing dictionaries.
@@ -65,7 +69,7 @@ Dictionaries are written to `data/engrish/<form>/`, where `<form>` is the locale
 Only needed if you are modifying the engrish source code. The test suite runs the full pipeline against real Wiktionary data and verifies dictionary generation, merging, EPUB output, and stats. The first run is slow (it generates StarDict dictionaries); subsequent runs reuse cached output.
 
 ```bash
-python -m pytest tests/test_engrish.py -x -vvv -s
+./venv/bin/python -m pytest tests/test_engrish.py -x -vvv -s
 ```
 
 The `-s` flag is important — it disables pytest's output capture so you can see progress bars and log messages during the pipeline steps.

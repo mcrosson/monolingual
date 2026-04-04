@@ -71,12 +71,22 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     gen_parser = subparsers.add_parser("generate", help="Generate StarDict dictionaries")
-    _add_all_or_items(
-        gen_parser,
-        flag="engrish-type",
+    gen_group = gen_parser.add_mutually_exclusive_group(required=True)
+    gen_group.add_argument(
+        "--engrish-type",
+        action="append",
         metavar="FORM",
-        help_item=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}",
-        help_all="Build all configured locales combined",
+        help=f"Locale code or '+'-separated codes to build. May be specified multiple times. Available: {available}",
+    )
+    gen_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Build all configured locales combined into one dictionary",
+    )
+    gen_group.add_argument(
+        "--all-singles",
+        action="store_true",
+        help="Build a separate single-language dictionary for each configured locale",
     )
 
     epub_parser = subparsers.add_parser("epub", help="Generate sampler EPUB for existing dictionaries")
@@ -123,6 +133,9 @@ def main() -> int:
         if args.all:
             all_form = "+".join(ALL_LOCALES)
             forms.append((all_form, _parse_form(all_form)))
+        elif args.all_singles:
+            for locale in ALL_LOCALES:
+                forms.append((locale, [locale]))
         else:
             for form in args.engrish_type:
                 forms.append((form, _parse_form(form)))

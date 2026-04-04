@@ -28,7 +28,18 @@ if os.environ.get("ENGRISH_MODE") and _ENGRISH_JSON.exists() and "en" in _ALL_LO
     _en_module = _ALL_LOCALES["en"]
     for _code, _cfg in _engrish_cfg.items():
         if _code in _ALL_LOCALES:
-            _ALL_LOCALES[_code].head_sections = (_cfg["wiktionary_section"],)
+            # Overwrite all public attrs from `en` so we use EN wiktionary
+            # parsing rules, not the native module's rules.
+            _existing = _ALL_LOCALES[_code]
+            _en_attrs = {a for a in dir(_en_module) if not a.startswith("_")}
+            for _attr in _en_attrs:
+                setattr(_existing, _attr, getattr(_en_module, _attr))
+            # Delete native attrs that `en` doesn't define so _populate
+            # falls back to defaults (e.g. ru.section_level = 1 → default 2).
+            for _attr in dir(defaults):
+                if not _attr.startswith("_") and _attr not in _en_attrs and hasattr(_existing, _attr):
+                    delattr(_existing, _attr)
+            _existing.head_sections = (_cfg["wiktionary_section"],)
             _wikidict_constants.LOCALE_ORIGIN[_code] = "en"
             continue
         _mod = types.ModuleType(f"wikidict.lang.{_code}")

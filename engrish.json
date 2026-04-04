@@ -98,5 +98,41 @@
     "he": {
         "wiktionary_section": "hebrew",
         "display_name": "Hebrew"
+    },
+    "fa": {
+        "wiktionary_section": "persian",
+        "display_name": "Persian"
+    },
+    "ja": {
+        "wiktionary_section": "japanese",
+        "display_name": "Japanese"
+    },
+    "zh": {
+        "wiktionary_section": "chinese",
+        "display_name": "Chinese"
+    },
+    "gez": {
+        "wiktionary_section": "ge'ez",
+        "display_name": "Ge'ez"
+    },
+    "pi": {
+        "wiktionary_section": "pali",
+        "display_name": "Pali"
+    },
+    "bo": {
+        "wiktionary_section": "tibetan",
+        "display_name": "Tibetan"
+    },
+    "peo": {
+        "wiktionary_section": "old persian",
+        "display_name": "Old Persian"
+    },
+    "pal": {
+        "wiktionary_section": "middle persian",
+        "display_name": "Middle Persian"
+    },
+    "ae": {
+        "wiktionary_section": "avestan",
+        "display_name": "Avestan"
     }
 }

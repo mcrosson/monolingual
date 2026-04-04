@@ -11,7 +11,6 @@ import logging
 import os
 import shutil
 import threading
-import unicodedata
 from collections import defaultdict
 from contextlib import suppress
 from copy import deepcopy
@@ -1033,33 +1032,13 @@ def load(file: Path) -> Words:
     return words
 
 
-def _strip_diacritics(text: str) -> str:
-    """Strip combining diacritical marks (macrons, dots, stress marks, etc.)."""
-    nfkd = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in nfkd if not unicodedata.combining(c))
-
-
 def make_variants(words: Words) -> Variants:
-    """Group word by variant.
-
-    When a variant target uses diacritics (e.g. ābīdan) that don't match any
-    headword, falls back to a diacritic-stripped form (abidan).  Both the
-    original word and the diacritical form are added as variants on the
-    normalized headword so both are discoverable via dictionary lookup.
-    """
+    """Group word by variant."""
     log.info("Creating variants ...")
     variants: Variants = defaultdict(set)
     for word, details in words.items():
         for variant in details.variants:
-            if variant in words:
-                variants[variant].add(word)
-            else:
-                normalized = _strip_diacritics(variant)
-                if normalized != variant and normalized in words:
-                    variants[normalized].add(word)
-                    variants[normalized].add(variant)
-                else:
-                    variants[variant].add(word)
+            variants[variant].add(word)
         for variant in details.reverse_variants:
             variants[word].add(variant)
     log.info("Created %s variants", f"{len(variants):,}")

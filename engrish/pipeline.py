@@ -2,13 +2,88 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import unicodedata
 from pathlib import Path
 
 from .paths import output_dir, parse_source_dir, render_source_dir
 
 log = logging.getLogger(__name__)
+
+def _try_strip_combining(target: str, headwords: set[str]) -> str | None:
+    """Try stripping combining characters from target to find a headword match.
+
+    Decomposes to NFD, identifies every distinct combining character present,
+    then tries removing progressively larger subsets — single marks first, then
+    pairs, triples, etc. — until a candidate lands on a headword.  Trying
+    smallest subsets first preserves as much of the original spelling as possible
+    (e.g. keeping Greek accents while stripping only vowel-length annotations).
+    """
+    from itertools import combinations
+
+    nfd = unicodedata.normalize("NFD", target)
+    marks = sorted({c for c in nfd if unicodedata.combining(c)})
+    if not marks:
+        return None
+
+    for r in range(1, len(marks) + 1):
+        for subset in combinations(marks, r):
+            drop = set(subset)
+            candidate = unicodedata.normalize("NFC", "".join(c for c in nfd if c not in drop))
+            if candidate != target and candidate in headwords:
+                return candidate
+
+    return None
+
+
+def normalize_variant_targets(locale: str) -> None:
+    """Rewrite variant targets in a locale's data-*.json so they match headwords.
+
+    Wiktionary often uses annotation diacritics in lemma headwords (Russian
+    stress marks, Greek vowel-length breves, Arabic tashkeel, Latin macrons)
+    that don't appear in the actual entry keys.  For each unresolved variant
+    target, we try stripping combining characters and check if the result
+    matches an existing headword — the headword set is the oracle for what
+    constitutes an annotation vs. a real accent.
+    """
+    render_dir = render_source_dir(locale)
+    jsons = sorted(render_dir.glob("data-*.json"))
+    if not jsons:
+        return
+
+    data_file = jsons[-1]
+    data: dict = json.loads(data_file.read_text("utf-8"))
+    headwords = set(data.keys())
+    fixed = 0
+
+    for word, entry in data.items():
+        variants = entry.get("variants")
+        if not variants:
+            continue
+        new_variants = []
+        for target in variants:
+            if target in headwords:
+                new_variants.append(target)
+                continue
+            resolved = _try_strip_combining(target, headwords)
+            if resolved:
+                new_variants.append(resolved)
+                fixed += 1
+            else:
+                new_variants.append(target)
+        entry["variants"] = new_variants
+
+    if fixed:
+        log.info("[%s] Normalized %s variant targets", locale, f"{fixed:,}")
+        data_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+        # Invalidate convert output so it re-runs with the updated data
+        out = output_dir(locale)
+        if out.exists():
+            shutil.rmtree(out)
+            log.info("[%s] Cleared stale convert output", locale)
+
 
 
 def delete_cache(locales: list[str]) -> None:
@@ -93,11 +168,15 @@ def run_wikidict(locales: list[str]) -> None:
             log.info("[%s] Already rendered — skipping", locale)
         else:
             log.info("=== [%s] render ===", locale)
-            render.main(locale)
+            if render.main(locale):
+                raise RuntimeError(f"Render failed for locale '{locale}'")
+
+        normalize_variant_targets(locale)
 
         out = output_dir(locale)
         if out.exists() and any(out.glob("dict-*.df")):
             log.info("[%s] Already converted — skipping", locale)
         else:
             log.info("=== [%s] convert ===", locale)
-            wikidict_convert.main(locale)
+            if wikidict_convert.main(locale):
+                raise RuntimeError(f"Convert failed for locale '{locale}'")
