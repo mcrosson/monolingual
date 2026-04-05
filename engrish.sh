@@ -20,27 +20,27 @@ done
 
 rm -r data/engrish
 
-./venv/bin/python engrish.py generate --all-singles --epub && \
-./venv/bin/python engrish.py generate --engrish-type ang+enm+en --epub && \
-./venv/bin/python engrish.py generate --engrish-type grc+el --epub && \
-./venv/bin/python engrish.py generate --engrish-type fro+frm+fr --epub && \
-./venv/bin/python engrish.py generate --engrish-type fa+peo+pal --epub && \
-./venv/bin/python engrish.py generate --engrish-type ru+cu --epub && \
-./venv/bin/python engrish.py generate --engrish-type got+non+ang --epub && \
-./venv/bin/python engrish.py generate --engrish-type la+grc --epub && \
-./venv/bin/python engrish.py generate --engrish-type sa+la+grc --epub && \
-./venv/bin/python engrish.py generate --engrish-type la+grc+he+arc+syc+cop --epub && \
-./venv/bin/python engrish.py generate --engrish-type sa+pi --epub && \
-./venv/bin/python engrish.py generate --engrish-type sa+pi+bo --epub && \
-./venv/bin/python engrish.py generate --engrish-type la+fr+es+it --epub && \
-./venv/bin/python engrish.py generate --engrish-type ar+he+arc+syc --epub && \
-./venv/bin/python engrish.py generate --engrish-type ar+fa --epub && \
-./venv/bin/python engrish.py generate --engrish-type zh+ja --epub && \
-./venv/bin/python engrish.py generate --engrish-type egy+akk --epub && \
-./venv/bin/python engrish.py generate --engrish-type la+ang+enm+fr --epub && \
-./venv/bin/python engrish.py generate --engrish-type en+fr+de+es --epub && \
-./venv/bin/python engrish.py generate --engrish-type en+fr+de+es+ru --epub && \
-./venv/bin/python engrish.py generate --engrish-type en+enm+ang+es+fr+de+ru+it+el+la+fro+grc --epub
+./venv/bin/python engrish.py --keep-xml generate --all-singles --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ang+enm+en --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type grc+el --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type fro+frm+fr --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type fa+peo+pal --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ru+cu --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type got+non+ang --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+la+grc --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc+he+arc+syc+cop --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi+bo --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+fr+es+it --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+he+arc+syc --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+fa --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type zh+ja --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type egy+akk --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+ang+enm+fr --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es+ru --epub && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+enm+ang+es+fr+de+ru+it+el+la+fro+grc --epub
 
 # === Historical / Diachronic ===
 # ang+enm+en          # Comprehensive English
@@ -83,7 +83,8 @@ mkdir -p \
   "$HUMAN/religious-texts" \
   "$HUMAN/regional-families" \
   "$HUMAN/period" \
-  "$HUMAN/modern-practical"
+  "$HUMAN/modern-practical" \
+  "$HUMAN/personal"
 
 # Copy source form dir into humanized/<category>/<name>,
 # then rename immediate children: replace form identifier with human name
@@ -133,3 +134,6 @@ copy_dict "la+ang+enm+fr" "period" "medieval-western-european"
 # === Modern Practical ===
 copy_dict "en+fr+de+es"   "modern-practical" "modern-western-european"
 copy_dict "en+fr+de+es+ru" "modern-practical" "modern-major-european"
+
+# === Personal ===
+copy_dict "en+enm+ang+es+fr+de+ru+it+el+la+fro+grc" "personal" "engrish"
