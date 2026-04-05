@@ -30,7 +30,6 @@ StarDict dictionary generator that extracts definitions from EN Wiktionary. Code
 - Pipeline: download → parse → render JSON → normalize variants → convert .df → StarDict
 - Key modules: `pipeline.py` (orchestration + normalization), `generate.py` (StarDict output), `merge.py` (multi-locale), `stardict.py` (low-level), `epub.py` (samplers)
 - Tests: `./venv/bin/python -m pytest tests/test_engrish.py -x -vvv -s` (LONG — 10+ min)
-- Test locales used by suite: grc, ru, fr, el, cu, ja, ang+enm+en, ru+grc, grc+el, ru+cu, ja+en, en (NOT fa)
 - Source data: `data/<locale>/en/` (render JSON + output .df/.zip)
 - Output data: `data/engrish/<form>/` (StarDict dirs + EPUBs)
 
@@ -44,7 +43,7 @@ When asked to verify output data, perform ALL of the following steps for the spe
 - List any headwords that have BOTH definitions AND variants.
 
 ### 2. Variant target integrity
-- For every variant-only entry, confirm its variant target exists as a headword in the same JSON.
+- For every entry that has variants (whether or not it also has definitions), confirm each variant target exists as a headword in the same JSON.
 - Report: how many variant targets are valid, how many are broken (target doesn't exist).
 - List ALL broken targets — not a sample, all of them.
 
