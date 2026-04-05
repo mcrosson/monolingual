@@ -68,7 +68,7 @@ def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
 
     return [
         (stem, _FONT_INDEX[stem].name)
-        for stem in sorted(needed, key=lambda s: _FONT_INDEX[s].stat().st_size)
+        for stem in sorted(needed, key=lambda s: -_FONT_INDEX[s].stat().st_size)
     ]
 
 
