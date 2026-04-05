@@ -31,16 +31,21 @@ from engrish.stardict import ifo_fields, patch_ifo
 # (locales, expect_overlap) — overlap=True means locales share headwords,
 # overlap=False means zero shared headwords (disjoint merge).
 TEST_FORMS: dict[str, tuple[list[str], bool | None]] = {
-    "grc": (["grc"], None),
-    "ru": (["ru"], None),
-    "fr": (["fr"], None),
-    "en": (["en"], None),
-    "el": (["el"], None),
-    "cu": (["cu"], None),
-    "ang+enm+en": (["ang", "enm", "en"], True),
-    "ru+grc": (["ru", "grc"], False),
-    "grc+el": (["grc", "el"], True),
-    "ru+cu": (["ru", "cu"], True),
+    # Single locales — cover diverse script families
+    "grc": (["grc"], None),           # Ancient Greek — Cypriot script
+    "ru": (["ru"], None),             # Russian — Cyrillic, native wikidict module
+    "fr": (["fr"], None),             # French — Latin, native module
+    "el": (["el"], None),             # Greek — native module
+    "cu": (["cu"], None),             # Church Slavonic — Glagolitic
+    "ja": (["ja"], None),             # Japanese — CJK + kana + emoji + Hentaigana
+    # Merged forms — test overlap and merge logic
+    "ang+enm+en": (["ang", "enm", "en"], True),   # English family — overlapping
+    "ru+grc": (["ru", "grc"], False),              # Cyrillic + Greek — disjoint
+    "grc+el": (["grc", "el"], True),               # Ancient + Modern Greek — overlapping
+    "ru+cu": (["ru", "cu"], True),                 # Russian + Church Slavonic — overlapping
+    "ja+en": (["ja", "en"], True),                 # CJK + English — overlapping, CJK merge
+    # Large stress test — en is last, biggest
+    "en": (["en"], None),             # English — very large, stress test
 }
 
 FORM_IDS = list(TEST_FORMS)
@@ -416,6 +421,150 @@ def test_en_retains_native_head_sections() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Config verification
+# ---------------------------------------------------------------------------
+
+
+def test_seed_fonts_loaded() -> None:
+    """Verify seed_fonts is loaded from config with expected stems."""
+    from engrish.config import SEED_FONTS
+
+    assert isinstance(SEED_FONTS, list)
+    assert len(SEED_FONTS) > 0
+    assert "NotoSans" in SEED_FONTS
+    assert "NotoSansMath" in SEED_FONTS
+    assert "NotoSansSymbols" in SEED_FONTS
+    assert "NotoSansSymbols2" in SEED_FONTS
+    assert "NotoColorEmoji" in SEED_FONTS
+
+
+def test_epub_base_fonts_loaded() -> None:
+    """Verify epub_base_fonts is loaded from config."""
+    from engrish.config import EPUB_BASE_FONTS
+
+    assert isinstance(EPUB_BASE_FONTS, list)
+    assert "NotoSans" in EPUB_BASE_FONTS
+
+
+def test_en_in_all_locales() -> None:
+    """Verify 'en' is in ALL_LOCALES via config, not hardcoded."""
+    from engrish.config import ALL_LOCALES, _ENGRISH_CFG
+
+    assert "en" in ALL_LOCALES
+    assert "en" in _ENGRISH_CFG, "en must be a configured language, not hardcoded"
+
+
+# ---------------------------------------------------------------------------
+# Font detection verification
+# ---------------------------------------------------------------------------
+
+
+def test_detect_fonts_locale_code_api(engrish_pipeline: dict[str, Path]) -> None:
+    """detect_fonts takes a locale code and resolves wiktionary_section from config."""
+    from engrish.paths import get_sqlite_path
+    from engrish.update_fonts import detect_fonts
+
+    db_path = get_sqlite_path()
+    for code in ("en", "ja", "ang"):
+        fonts = detect_fonts(code, db_path)
+        assert isinstance(fonts, list)
+        assert len(fonts) > 0, f"detect_fonts returned empty for {code}"
+        assert all(isinstance(f, str) for f in fonts)
+
+
+def test_detect_fonts_wiktionary_section_override(engrish_pipeline: dict[str, Path]) -> None:
+    """detect_fonts accepts wiktionary_section kwarg for codes not in config."""
+    from engrish.paths import get_sqlite_path
+    from engrish.update_fonts import detect_fonts
+
+    db_path = get_sqlite_path()
+    # Use a known section heading with a made-up code
+    fonts = detect_fonts("_test_fr", db_path, wiktionary_section="french")
+    assert isinstance(fonts, list)
+    assert len(fonts) > 0, "detect_fonts with explicit section returned empty"
+
+
+def test_collect_headword_chars_batch(engrish_pipeline: dict[str, Path]) -> None:
+    """Batch scan returns chars keyed by locale code for multiple languages."""
+    from engrish.paths import get_sqlite_path
+    from engrish.update_fonts import collect_headword_chars_batch
+
+    db_path = get_sqlite_path()
+    result = collect_headword_chars_batch(["en", "ja"], db_path)
+    assert "en" in result
+    assert "ja" in result
+    assert len(result["en"]) > 0, "No non-ASCII chars found for en"
+    assert len(result["ja"]) > 0, "No non-ASCII chars found for ja"
+
+
+# ---------------------------------------------------------------------------
+# EPUB font verification
+# ---------------------------------------------------------------------------
+
+
+def test_epub_contains_base_fonts(engrish_epubs: dict[str, Path]) -> None:
+    """Every EPUB must contain all epub_base_fonts."""
+    from engrish.config import EPUB_BASE_FONTS
+
+    for form, epub_path in engrish_epubs.items():
+        with zipfile.ZipFile(epub_path) as zf:
+            font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
+            for stem in EPUB_BASE_FONTS:
+                assert any(stem in f for f in font_files), (
+                    f"EPUB for {form} missing base font {stem}"
+                )
+
+
+def test_epub_contains_cjk_fonts(engrish_epubs: dict[str, Path]) -> None:
+    """Japanese EPUB must contain CJK font files."""
+    epub_path = engrish_epubs["ja"]
+    with zipfile.ZipFile(epub_path) as zf:
+        font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
+        assert any("NotoSansJP" in f for f in font_files), (
+            "Japanese EPUB missing NotoSansJP font"
+        )
+
+
+def test_epub_contains_emoji_font(engrish_epubs: dict[str, Path]) -> None:
+    """EPUBs for locales with emoji headwords must contain NotoColorEmoji."""
+    for form in ("en", "ja"):
+        epub_path = engrish_epubs[form]
+        with zipfile.ZipFile(epub_path) as zf:
+            font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
+            assert any("NotoColorEmoji" in f for f in font_files), (
+                f"EPUB for {form} missing NotoColorEmoji font"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Update-fonts verification
+# ---------------------------------------------------------------------------
+
+
+def test_update_fonts_downloads_missing(engrish_pipeline: dict[str, Path]) -> None:
+    """Temporarily remove a font, run update-fonts, verify it's re-downloaded."""
+    from engrish.config import FONTS_DIR
+    from engrish.update_fonts import _find_font_file, run as run_update_fonts
+
+    stem = "NotoSansRunic"
+    font_file = _find_font_file(stem, FONTS_DIR)
+    assert font_file is not None, f"{stem} not on disk before test"
+
+    original_bytes = font_file.read_bytes()
+    font_file.unlink()
+    try:
+        assert _find_font_file(stem, FONTS_DIR) is None, "Font should be gone"
+        result = run_update_fonts()
+        assert result == 0, "update-fonts returned non-zero"
+        restored = _find_font_file(stem, FONTS_DIR)
+        assert restored is not None, f"{stem} was not re-downloaded"
+    finally:
+        # Ensure font is restored even if test fails
+        if not _find_font_file(stem, FONTS_DIR):
+            font_file.write_bytes(original_bytes)
+
+
+# ---------------------------------------------------------------------------
 # CLI validation
 # ---------------------------------------------------------------------------
 
@@ -439,7 +588,7 @@ def test_parse_form_validation() -> None:
 # ---------------------------------------------------------------------------
 
 # Locales in engrish.json that also have a native wikidict/lang/<code>/ module
-_NATIVE_MODULE_LOCALES = ["el", "ru", "de", "fr", "es", "it"]
+_NATIVE_MODULE_LOCALES = ["el", "ru", "de", "fr", "es", "it", "ja"]
 
 # Parsing-critical _populate dicts that must match 'en' for engrish locales.
 # These are the dict names from wikidict.lang (built by _populate).
