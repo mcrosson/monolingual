@@ -42,7 +42,7 @@ Looks up the language codes in the dump and adds them to `engrish.json`.
 ./venv/bin/python engrish.py generate --all-singles
 ```
 
-Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale.
+Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale. Add `--epub` to generate a sampler EPUB for each dictionary after building it.
 
 ### `--keep-xml`
 
