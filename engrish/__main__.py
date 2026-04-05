@@ -103,6 +103,11 @@ def main() -> int:
         help_all="Generate EPUBs for all existing dictionaries",
     )
 
+    subparsers.add_parser(
+        "prepare",
+        help="Download and decompress the EN Wiktionary dump",
+    )
+
     add_lang_parser = subparsers.add_parser("add-language", help="Add languages to engrish.json config")
     _add_all_or_items(
         add_lang_parser,
@@ -179,6 +184,11 @@ def main() -> int:
                 epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
                 log.info("Generating sampler EPUB: %s", epub_path)
                 generate_epub(locales, epub_path, form=form)
+
+    elif args.command == "prepare":
+        from wikidict import download
+
+        download.main(ALL_LOCALES[0])
 
     elif args.command == "epub":
         from .epub import run as run_epub
