@@ -33,6 +33,15 @@ Downloads and parses the EN Wiktionary dump (if needed), then shows every langua
 
 Looks up the language codes in the dump and adds them to `engrish.json`.
 
+### Prepare the Wiktionary dump
+
+```bash
+./venv/bin/python engrish.py prepare
+./venv/bin/python engrish.py --keep-xml prepare
+```
+
+Downloads and decompresses the EN Wiktionary dump without generating anything. Use this to get the slow download out of the way before running `generate` or `language-stats`.
+
 ### Generate dictionaries
 
 ```bash
@@ -43,6 +52,8 @@ Looks up the language codes in the dump and adds them to `engrish.json`.
 ```
 
 Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale. Add `--epub` to generate a sampler EPUB for each dictionary after building it.
+
+For multi-locale forms, the order of locale codes in `--engrish-type` controls display order — `ang+en` shows Old English definitions before Modern English, `en+ang` does the reverse.
 
 ### `--keep-xml`
 
@@ -58,6 +69,14 @@ Global flag — can be used with any subcommand. Keeps the decompressed Wiktiona
 Creates a sampler EPUB for smoke-testing dictionary rendering on your eBook reader. Each EPUB includes a cover, summary table, stress test with the largest entries, cross-language shared entries (for merged dictionaries), per-locale spot checks, and a missing words analysis. Use these to verify headwords, alternates, and pronunciations render correctly with the configured fonts before deploying the StarDict files.
 
 Fonts included in the EPUB come from the `epub_base_fonts` config (always included) plus each locale's `fonts` list. Run `update-fonts` before generating EPUBs to ensure all required font files are on disk.
+
+### Update fonts
+
+```bash
+./venv/bin/python engrish.py update-fonts
+```
+
+Downloads any Noto Sans fonts referenced in `engrish.json` that aren't already in the `fonts/Noto/` directory.
 
 ### `--no-cache`
 
