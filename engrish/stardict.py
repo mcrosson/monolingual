@@ -103,8 +103,15 @@ def decompress_dict_dz(folder: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def extract_stardict_zip(zip_path: Path, dest_folder: Path, dict_name: str) -> None:
-    """Extract a StarDict zip into dest_folder, rename files to dict_name, then post-process."""
+def extract_stardict_zip(zip_path: Path, dest_folder: Path, dict_name: str, locale: str) -> None:
+    """Extract a StarDict zip into dest_folder, rename files to dict_name, then post-process.
+
+    Resource files under res/ are normalized via normalize_res_filename
+    (flattened subdirs, locale-prefixed) so naming is consistent across
+    single-locale and multi-locale outputs.
+    """
+    from .merge import normalize_res_filename
+
     if not zip_path.exists():
         log.warning("StarDict zip not found: %s — skipping", zip_path)
         return
@@ -114,11 +121,15 @@ def extract_stardict_zip(zip_path: Path, dest_folder: Path, dict_name: str) -> N
             parts = Path(member.filename).parts
             if not parts or parts[-1] == "":
                 continue
-            if len(parts) >= 2 and parts[-2] == "res":
-                rel = Path("res") / parts[-1]
+            # Find res/ anywhere in the path
+            if "res" in parts:
+                res_idx = parts.index("res")
+                rel = "/".join(parts[res_idx + 1:])
+                if not rel:
+                    continue
+                target = dest_folder / "res" / normalize_res_filename(rel, locale)
             else:
-                rel = Path(parts[-1])
-            target = dest_folder / rel
+                target = dest_folder / parts[-1]
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)

@@ -245,6 +245,33 @@ def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> Non
     )
 
 
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
+    """Every res/ reference in merged HTML must have a matching file in collect_locale_res."""
+    locales, _ = TEST_FORMS[form]
+    merged = merge.merge_dfs(locales, noetym=False)
+
+    # Collect all src="res/..." references from HTML
+    html_res_refs: set[str] = set()
+    for _, (_, html) in merged.items():
+        for m in re.finditer(r'(?:src|href)="(res/[^"]+)"', html):
+            html_res_refs.add(m.group(1))
+
+    if not html_res_refs:
+        return  # no res/ references in this form's data
+
+    # Collect actual files that would be written
+    available_files: set[str] = set()
+    for locale in locales:
+        for fname in merge.collect_locale_res(locale, noetym=False):
+            available_files.add(f"res/{fname}")
+
+    missing = html_res_refs - available_files
+    assert not missing, (
+        f"HTML references res/ files that don't exist in collect_locale_res: {sorted(missing)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # EPUB verification
 # ---------------------------------------------------------------------------

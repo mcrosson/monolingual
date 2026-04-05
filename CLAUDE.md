@@ -81,12 +81,16 @@ When asked to verify output data, perform ALL of the following steps for the spe
 - Compare `.ifo` `wordcount` to `.df` `@` headword count. Report match or delta.
 - Compare `.ifo` `synwordcount` to `.df` `&` synonym count. Report match or delta.
 
-### 7. Merged form check (multi-locale forms only)
-- For each locale in the merge, count headwords in the per-locale `.df`.
-- Count headwords in the merged `.df`. Verify it equals the **union** (not sum) of per-locale headwords.
-- For headwords present in multiple locales, confirm the merged HTML contains `<h3>` section headers for each contributing locale.
-- For headwords present in only one locale, confirm NO `<h3>` header exists.
-- Check that all `res/` URLs in merged HTML have locale prefixes.
+### 7. Merged form and res/ integrity check
+- For multi-locale forms:
+  - For each locale in the merge, count headwords in the per-locale `.df`.
+  - Count headwords in the merged `.df`. Verify it equals the **union** (not sum) of per-locale headwords.
+  - For headwords present in multiple locales, confirm the merged HTML contains `<h3>` section headers for each contributing locale.
+  - For headwords present in only one locale, confirm NO `<h3>` header exists.
+- For all forms (single-locale and multi-locale):
+  - Check that all `res/` URLs in HTML have locale prefixes (e.g. `res/en_foo.jpg`, not `res/foo.jpg`).
+  - For every `res/` URL referenced in HTML, confirm a matching file exists in the output `res/` directory or would be produced by `collect_locale_res`.
+  - List ALL broken res/ references (HTML points to a file that doesn't exist).
 
 ### 8. Final summary table and assessment
 
@@ -94,7 +98,7 @@ Format:
 
 | Check | Source Value | Dest Value | Match? | Verdict |
 
-Rows: headword counts, variant integrity, synonym integrity, wordcount, synwordcount.
+Rows: headword counts, variant integrity, synonym integrity, wordcount, synwordcount, res/ integrity.
 
 Verdict column must be one of:
 - OK — values match and are correct

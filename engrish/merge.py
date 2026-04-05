@@ -60,6 +60,11 @@ def parse_df(path: Path) -> dict[str, tuple[list[str], str]]:
 # ---------------------------------------------------------------------------
 
 
+def normalize_res_filename(rel_path: str, locale: str) -> str:
+    """Canonical res/ filename: flatten subdirs to underscores, prefix with locale."""
+    return f"{locale}_{rel_path.replace('/', '_')}"
+
+
 class _ResUrlRewriter(HTMLParser):
     """Rebuild HTML, rewriting src/href attributes that start with 'res/' to
     include a locale prefix (e.g. res/foo.jpg -> res/en_foo.jpg).
@@ -75,8 +80,7 @@ class _ResUrlRewriter(HTMLParser):
 
     def _rewrite_res(self, value: str) -> str:
         rel = value[4:]  # strip leading "res/"
-        flat = rel.replace("/", "_")
-        return f"res/{self._locale}_{flat}"
+        return f"res/{normalize_res_filename(rel, self._locale)}"
 
     def _build_attrs(self, attrs: list[tuple[str, str | None]]) -> str:
         out = ""
@@ -136,8 +140,7 @@ def collect_locale_res(locale: str, noetym: bool) -> dict[str, bytes]:
             rel = name[idx + 4:]
             if not rel:
                 continue
-            flat = rel.replace("/", "_")
-            prefixed = f"{locale}_{flat}"
+            prefixed = normalize_res_filename(rel, locale)
             with zf.open(member) as fh:
                 result[prefixed] = fh.read()
     return result

@@ -5,31 +5,19 @@ from __future__ import annotations
 import logging
 import shutil
 
-from .config import FORM_NAMES
 from .merge import collect_locale_res, merge_dfs, write_merged_df
 from .paths import (
     dict_base_name,
     engrish_form_dir,
     get_snapshot_date,
-    stardict_zip_path,
 )
 from .stardict import (
     convert_df_to_stardict,
-    extract_stardict_zip,
     ifo_fields,
     patch_ifo,
 )
 
 log = logging.getLogger(__name__)
-
-
-def copy_single_locale_output(locale: str, form: str, form_dir, date: str) -> None:
-    """Extract StarDict ZIPs (etym + noetym) for a single locale into form_dir."""
-    for noetym in (False, True):
-        name = dict_base_name(form, date, noetym=noetym)
-        folder = form_dir / name
-        extract_stardict_zip(stardict_zip_path(locale, noetym=noetym), folder, name)
-        patch_ifo(folder, name, ifo_fields(form, date, name))
 
 
 def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> None:
@@ -85,11 +73,7 @@ def process_form(form: str, locales: list[str]) -> None:
     date = get_snapshot_date(locales)
     log.info("Snapshot date: %s", date)
 
-    if len(locales) == 1:
-        log.info("Copying StarDict output for single locale: %s", locales[0])
-        copy_single_locale_output(locales[0], form, form_dir, date)
-    else:
-        log.info("Building merged StarDict for locales: %s", locales)
-        build_merged_output(locales, form, form_dir, date)
+    log.info("Building StarDict for locales: %s", locales)
+    build_merged_output(locales, form, form_dir, date)
 
     log.info("Done. Output: %s", form_dir)
