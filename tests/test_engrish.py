@@ -598,6 +598,40 @@ def test_epub_contains_emoji_font(engrish_epubs: dict[str, Path]) -> None:
             )
 
 
+def test_epub_css_font_order_largest_first(engrish_epubs: dict[str, Path]) -> None:
+    """CSS font-family cascade must list fonts largest-first to match greedy set cover."""
+    from engrish.config import FONTS_DIR
+
+    for form, epub_path in engrish_epubs.items():
+        with zipfile.ZipFile(epub_path) as zf:
+            css = zf.read("OEBPS/styles.css").decode("utf-8")
+
+        # Extract font stems from the font-family line
+        for line in css.splitlines():
+            if "font-family:" in line:
+                # Parse 'FontA', 'FontB', ... , serif
+                stems = [s.strip().strip("'") for s in line.split(":", 1)[1].split(",")]
+                stems = [s for s in stems if s not in ("serif", "")]
+                break
+        else:
+            raise AssertionError(f"No font-family line in CSS for {form}")
+
+        # Look up file sizes for each stem
+        sizes = []
+        for stem in stems:
+            matches = [f for f in FONTS_DIR.glob("*") if f.suffix in (".ttf", ".otf")
+                       and f.stem.split("[")[0].split("-")[0] == stem]
+            assert matches, f"Font {stem} in CSS but not in {FONTS_DIR}"
+            sizes.append((stem, matches[0].stat().st_size))
+
+        # Verify descending order
+        for i in range(len(sizes) - 1):
+            assert sizes[i][1] >= sizes[i + 1][1], (
+                f"EPUB {form}: font {sizes[i][0]} ({sizes[i][1]:,}B) is smaller than "
+                f"next font {sizes[i+1][0]} ({sizes[i+1][1]:,}B) — cascade must be largest-first"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Update-fonts verification
 # ---------------------------------------------------------------------------
