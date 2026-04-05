@@ -8,8 +8,11 @@ for arg in "$@"; do
       rm -r data
       exit
       ;;
-    --run-tests)
+    --prepare)
       ./venv/bin/python engrish.py --keep-xml prepare
+      exit
+      ;;
+    --run-tests)
       ./venv/bin/python -m pytest tests/test_engrish.py -x -vvv -s
       exit
       ;;
