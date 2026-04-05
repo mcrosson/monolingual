@@ -14,7 +14,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from .config import EPUB_BASE_FONTS, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
-from .merge import parse_df
+from .merge import normalize_res_filename, parse_df
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
 log = logging.getLogger(__name__)
@@ -430,6 +430,8 @@ _CLEANUP_CATEGORIES = [
      "Japanese verb \u3059\u308B suffix stripped to match the noun/stem headword."),
     ("comma", "Comma Split",
      "Comma-separated targets split into individual headwords."),
+    ("images", "Inline Images",
+     "Resource file references normalized to locale-prefixed flat filenames. Look up these headwords to verify images render correctly."),
     ("dangling", "Dropped (Unresolvable)",
      "Targets with no matching headword in the source data, removed during cleanup."),
 ]
@@ -540,6 +542,27 @@ def _find_cleanup_examples(
                             "headword": hw,
                         })
                         locale_seen["dangling"].add(code)
+
+    # Image scanning — find entries with res/ file references in definition HTML
+    for code in locale_data:
+        locale_name = _locale_label(code)
+        for hw, (_, html) in locale_data[code].items():
+            for m in re.finditer(r'src="(res/([^"]+))"', html):
+                raw_path = m.group(1)
+                rel = m.group(2)
+                counts["images"] += 1
+                exs = examples["images"]
+                if (
+                    len(exs) < _MAX_EXAMPLES_PER_CATEGORY
+                    and code not in locale_seen["images"]
+                ):
+                    exs.append({
+                        "locale": locale_name,
+                        "original": raw_path,
+                        "normalized": f"res/{normalize_res_filename(rel, code)}",
+                        "headword": hw,
+                    })
+                    locale_seen["images"].add(code)
 
     # Build result — only categories with examples
     result = []
