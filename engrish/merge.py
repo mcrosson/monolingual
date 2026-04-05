@@ -7,7 +7,7 @@ import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .config import DISPLAY_ORDER, FORM_NAMES
+from .config import FORM_NAMES
 from .paths import df_path, stardict_zip_path
 
 log = logging.getLogger(__name__)
@@ -151,9 +151,9 @@ def collect_locale_res(locale: str, noetym: bool) -> dict[str, bytes]:
 def merge_dfs(
     locales: list[str], noetym: bool = False
 ) -> dict[str, tuple[list[str], str]]:
-    """Merge .df files from multiple locales, ordered by DISPLAY_ORDER."""
+    """Merge .df files from multiple locales, preserving caller's locale order."""
     per_locale: dict[str, dict[str, tuple[list[str], str]]] = {}
-    active = [loc for loc in DISPLAY_ORDER if loc in locales]
+    active = list(locales)
 
     for locale in active:
         path = df_path(locale, noetym=noetym)

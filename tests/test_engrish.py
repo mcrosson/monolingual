@@ -211,6 +211,39 @@ def test_merge_dfs(engrish_pipeline: dict[str, Path], form: str) -> None:
                 "entries with <h3> headers — unexpected shared headwords"
             )
 
+import re
+
+
+def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> None:
+    """Merged <h3> headers must appear in the order the caller specified."""
+    locales = ["ang", "enm", "en"]
+    merged = merge.merge_dfs(locales, noetym=False)
+
+    # Find a word present in all three locales
+    overlapping = {
+        w: html
+        for w, (_, html) in merged.items()
+        if all(f"<h3>{FORM_NAMES[loc]}</h3>" in html for loc in locales)
+    }
+    assert overlapping, "Need at least one word present in all three locales"
+
+    word, html = next(iter(overlapping.items()))
+    positions = [html.index(f"<h3>{FORM_NAMES[loc]}</h3>") for loc in locales]
+    assert positions == sorted(positions), (
+        f"Headers for {word!r} not in caller order {locales}: "
+        f"got positions {positions}"
+    )
+
+    # Reverse the locale list and verify headers follow the new order
+    reversed_locales = list(reversed(locales))
+    merged_rev = merge.merge_dfs(reversed_locales, noetym=False)
+    _, html_rev = merged_rev[word]
+    positions_rev = [html_rev.index(f"<h3>{FORM_NAMES[loc]}</h3>") for loc in reversed_locales]
+    assert positions_rev == sorted(positions_rev), (
+        f"Headers for {word!r} not in reversed order {reversed_locales}: "
+        f"got positions {positions_rev}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # EPUB verification

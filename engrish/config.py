@@ -20,9 +20,6 @@ ALL_LOCALES = list(_ENGRISH_CFG)
 # Human-readable names for each locale
 FORM_NAMES: dict[str, str] = {code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items()}
 
-# Display order: config insertion order
-DISPLAY_ORDER = list(ALL_LOCALES)
-
 DATA_DIR = Path(os.getenv("CWD", "")) / "data"
 ENGRISH_DIR = DATA_DIR / "engrish"
 FONTS_DIR = Path(__file__).parent.parent / "fonts" / "Noto"

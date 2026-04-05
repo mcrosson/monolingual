@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from .config import DISPLAY_ORDER, EPUB_BASE_FONTS, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
+from .config import EPUB_BASE_FONTS, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
 from .merge import parse_df
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
@@ -184,7 +184,7 @@ class ChapterInfo:
 
 def _load_locale_data(locales: list[str]) -> dict[str, dict[str, tuple[list[str], str]]]:
     """Load .df data for all active locales."""
-    active = [loc for loc in DISPLAY_ORDER if loc in locales]
+    active = list(locales)
     data: dict[str, dict[str, tuple[list[str], str]]] = {}
     for locale in active:
         path = df_path(locale, noetym=False)
