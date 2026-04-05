@@ -12,6 +12,7 @@ StarDict dictionary generator that extracts definitions from EN Wiktionary. Code
 - **Verify small, verify targeted.** For a change that only affects one locale or one function, verify with a targeted check — import test, dry-run, unit logic, spot-check the affected data. Not a full suite run.
 - **No sycophancy.** Don't apologize excessively or pad responses. Be direct. If you screwed up, say what happened in one sentence and move on.
 - **No unsolicited improvements.** Don't refactor, add comments, or "improve" code I didn't ask about.
+- **Broken counts are not acceptable.** When verification shows nonzero broken/dangling/dead counts, that is a problem to diagnose — not a footnote to dismiss. Determine whether each issue is a pipeline bug or a source data limitation, and say which.
 
 ### Sessions are iterative
 - I work through multiple tasks per session.
@@ -53,6 +54,18 @@ When asked to verify output data, perform ALL of the following steps for the spe
 - List ALL chains that terminate without definitions (dead chains).
 - List ALL chains that form cycles.
 
+### 3a. Normalization assessment
+- Categorize ALL broken variant targets from Step 2 by failure type:
+  - Unicode normalization failures (fullwidth, combining marks, NFC/NFD)
+  - Case mismatches
+  - Anchor/fragment references (target contains # or //)
+  - Missing headwords (target simply doesn't exist in source data)
+  - Script/romanization mismatches
+  - Locale-specific normalization failures (e.g. Persian kaf/yeh, Arabic tashkeel)
+- For each category, report count and examples.
+- For categories that normalize_variant_targets SHOULD handle, flag as pipeline bugs.
+- For categories that are upstream Wiktionary data issues, flag as source data issues.
+
 ### 4. DF file cross-check
 - Read the `.df` file(s) in `data/<locale>/en/output/`.
 - Report: total `@` headword count, total `&` synonym count.
@@ -75,11 +88,25 @@ When asked to verify output data, perform ALL of the following steps for the spe
 - For headwords present in only one locale, confirm NO `<h3>` header exists.
 - Check that all `res/` URLs in merged HTML have locale prefixes.
 
-### 8. Final summary table
+### 8. Final summary table and assessment
+
 Format:
 
-| Check | Source Value | Dest Value | Match? |
+| Check | Source Value | Dest Value | Match? | Verdict |
 
 Rows: headword counts, variant integrity, synonym integrity, wordcount, synwordcount.
+
+Verdict column must be one of:
+- OK — values match and are correct
+- BUG — mismatch caused by pipeline code that should be fixed
+- SOURCE — mismatch caused by upstream data the pipeline can't control
+- REGRESSION — previously working, now broken
+
+After the table, state:
+- Total pipeline bugs found (count)
+- Total source data issues found (count)
+- Whether normalize_variant_targets is functioning correctly (yes/no, with evidence)
+
+Do NOT conclude "pipeline is sound" or equivalent if any BUG verdicts exist.
 
 If a file doesn't exist or a step doesn't apply, say so explicitly — never silently skip it.
