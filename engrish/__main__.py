@@ -88,6 +88,11 @@ def main() -> int:
         action="store_true",
         help="Build a separate single-language dictionary for each configured locale",
     )
+    gen_parser.add_argument(
+        "--epub",
+        action="store_true",
+        help="Generate a sampler EPUB for each dictionary after building it",
+    )
 
     epub_parser = subparsers.add_parser("epub", help="Generate sampler EPUB for existing dictionaries")
     _add_all_or_items(
@@ -162,6 +167,18 @@ def main() -> int:
         # Phase 2: generate engrish output per form
         for form, locales in forms:
             process_form(form, locales)
+
+        # Phase 3: optional EPUB generation
+        if args.epub:
+            from .epub import generate_epub
+            from .paths import dict_base_name, engrish_form_dir, get_snapshot_date
+
+            for form, locales in forms:
+                date = get_snapshot_date(locales)
+                form_dir = engrish_form_dir(form)
+                epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
+                log.info("Generating sampler EPUB: %s", epub_path)
+                generate_epub(locales, epub_path, form=form)
 
     elif args.command == "epub":
         from .epub import run as run_epub
