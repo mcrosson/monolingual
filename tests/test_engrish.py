@@ -44,6 +44,8 @@ TEST_FORMS: dict[str, tuple[list[str], bool | None]] = {
     "grc+el": (["grc", "el"], True),               # Ancient + Modern Greek — overlapping
     "ru+cu": (["ru", "cu"], True),                 # Russian + Church Slavonic — overlapping
     "ja+en": (["ja", "en"], True),                 # CJK + English — overlapping, CJK merge
+    # Large merged — many locales, overlapping
+    "en+enm+ang+es+fr+de+ru+it+el+la+fro+grc": (["en", "enm", "ang", "es", "fr", "de", "ru", "it", "el", "la", "fro", "grc"], True),
     # Large stress test — en is last, biggest
     "en": (["en"], None),             # English — very large, stress test
 }

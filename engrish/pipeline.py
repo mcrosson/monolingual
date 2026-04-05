@@ -384,6 +384,7 @@ def normalize_variant_targets(locale: str) -> None:
             entry["variants"] = variants + additions
 
     # Pass 13: cleanup — drop unresolvable, dedup exact-only
+    dead_entries: list[str] = []
     for word, entry in data.items():
         variants = entry.get("variants")
         if not variants:
@@ -409,6 +410,13 @@ def normalize_variant_targets(locale: str) -> None:
             entry["variants"] = clean
         else:
             entry.pop("variants", None)
+            # Entry with no definitions and no variants is dead — remove it
+            if not entry.get("definitions"):
+                dead_entries.append(word)
+    for word in dead_entries:
+        del data[word]
+    if dead_entries:
+        log.info("[%s] Removed %s dead entries (no definitions, no variants)", locale, f"{len(dead_entries):,}")
 
     total = normalized + chains_resolved
     if total or dangling_dropped or cleanup_modified:
