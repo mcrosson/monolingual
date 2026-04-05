@@ -780,10 +780,11 @@ def test_resolve_variant_chain() -> None:
         "c": {"definitions": {"Noun": ["a thing"]}},
     }
     defs = {"c"}
+    headwords = set(data.keys())
 
-    assert _resolve_variant_chain("a", data, defs) == "c"
-    assert _resolve_variant_chain("b", data, defs) == "c"
-    assert _resolve_variant_chain("c", data, defs) == "c"
+    assert _resolve_variant_chain("a", data, defs, headwords, {}) == "c"
+    assert _resolve_variant_chain("b", data, defs, headwords, {}) == "c"
+    assert _resolve_variant_chain("c", data, defs, headwords, {}) == "c"
 
 
 def test_resolve_variant_chain_cycle() -> None:
@@ -795,7 +796,7 @@ def test_resolve_variant_chain_cycle() -> None:
         "b": {"variants": ["a"]},
     }
 
-    assert _resolve_variant_chain("a", data, set()) is None
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
 
 
 def test_resolve_variant_chain_dead_end() -> None:
@@ -807,7 +808,7 @@ def test_resolve_variant_chain_dead_end() -> None:
         "b": {},
     }
 
-    assert _resolve_variant_chain("a", data, set()) is None
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
 
 
 def test_resolve_variant_chain_missing_target() -> None:
@@ -818,7 +819,470 @@ def test_resolve_variant_chain_missing_target() -> None:
         "a": {"variants": ["nonexistent"]},
     }
 
-    assert _resolve_variant_chain("a", data, set()) is None
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
+
+
+# ---------------------------------------------------------------------------
+# normalize_variant_targets — full function tests
+# ---------------------------------------------------------------------------
+
+
+def _run_normalize(tmp_path: Path, data: dict) -> dict:
+    """Write test data to a fake locale dir, run normalize, return result."""
+    import json
+    from unittest.mock import patch
+
+    from engrish.pipeline import normalize_variant_targets
+
+    data_file = tmp_path / "data-20260101.json"
+    data_file.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(exist_ok=True)
+
+    with (
+        patch("engrish.pipeline.render_source_dir", return_value=tmp_path),
+        patch("engrish.pipeline.output_dir", return_value=out_dir),
+    ):
+        normalize_variant_targets("test")
+
+    return json.loads(data_file.read_text("utf-8"))
+
+
+# -- Step 1: core write behavior --
+
+
+def test_normalize_resolves_and_drops_unresolvable(tmp_path: Path) -> None:
+    """Non-headword targets are resolved to headwords; unresolvable originals are dropped."""
+    data = {
+        "DVD": {"definitions": {"Noun": ["disc"]}},
+        "entry": {"variants": ["\uFF24\uFF36\uFF24"]},  # ＤＶＤ fullwidth
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["entry"]["variants"]
+    assert "DVD" in variants, "NFKC-normalized headword must be present"
+    # Original ＤＶＤ is not a headword, so it's dropped in cleanup
+    assert "\uFF24\uFF36\uFF24" not in variants
+
+
+def test_normalize_multiple_resolutions_all_added(tmp_path: Path) -> None:
+    """If multiple normalizations resolve, ALL headword forms are written."""
+    data = {
+        "ab": {"definitions": {"Noun": ["thing"]}},
+        "a-b": {"definitions": {"Noun": ["other"]}},
+        "entry": {"variants": ["a\u00B7b"]},  # a·b → strip gives "ab", replace with "-" gives "a-b"
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["entry"]["variants"]
+    assert "ab" in variants, "interpunct-stripped form"
+    assert "a-b" in variants, "interpunct-to-hyphen form"
+
+
+def test_normalize_exact_dedup_only(tmp_path: Path) -> None:
+    """Exact-identical strings are collapsed, but non-identical are kept."""
+    data = {
+        "target": {"definitions": {"Noun": ["thing"]}},
+        "entry": {"variants": ["target", "target"]},  # duplicate
+    }
+    result = _run_normalize(tmp_path, data)
+    assert result["entry"]["variants"].count("target") == 1
+
+
+# -- Step 2: anchor/fragment stripping --
+
+
+def test_normalize_anchor_hash(tmp_path: Path) -> None:
+    data = {
+        "you": {"definitions": {"Pronoun": ["second person"]}},
+        "entry": {"variants": ["you#Noun"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["entry"]["variants"]
+    assert "you" in variants, "anchor-stripped form present"
+
+
+def test_normalize_anchor_double_slash(tmp_path: Path) -> None:
+    data = {
+        "atomus": {"definitions": {"Noun": ["atom"]}},
+        "entry": {"variants": ["atomus//atomos"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "atomus" in result["entry"]["variants"]
+
+
+# -- Step 3: ZWNJ --
+
+
+def test_normalize_zwnj_removal(tmp_path: Path) -> None:
+    data = {
+        "\u0633\u0631\u0627\u06CC": {"definitions": {"Noun": ["palace"]}},  # سرای
+        "entry": {"variants": ["\u0633\u0631\u0627\u06CC\u200c"]},  # سرای + ZWNJ
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["entry"]["variants"]
+    assert "\u0633\u0631\u0627\u06CC" in variants
+
+
+def test_normalize_zwnj_to_space(tmp_path: Path) -> None:
+    data = {
+        "a b": {"definitions": {"Noun": ["thing"]}},
+        "entry": {"variants": ["a\u200cb"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "a b" in result["entry"]["variants"]
+
+
+# -- Step 4: NFKC --
+
+
+def test_normalize_nfkc_fullwidth(tmp_path: Path) -> None:
+    data = {
+        "DVD": {"definitions": {"Noun": ["disc"]}},
+        "entry": {"variants": ["\uFF24\uFF36\uFF24"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "DVD" in result["entry"]["variants"]
+
+
+def test_normalize_nfkc_presentation_form(tmp_path: Path) -> None:
+    """Arabic presentation form U+FEEE (waw final) → U+0648 (waw)."""
+    data = {
+        "\u0648": {"definitions": {"Conjunction": ["and"]}},  # و
+        "entry": {"variants": ["\uFEEE"]},  # ﻮ (presentation form)
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "\u0648" in result["entry"]["variants"]
+
+
+def test_normalize_nfkc_cjk_radical(tmp_path: Path) -> None:
+    data = {
+        "\u77DB": {"definitions": {"Noun": ["spear"]}},  # 矛
+        "entry": {"variants": ["\u2F6D"]},  # ⽭ (kangxi radical)
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "\u77DB" in result["entry"]["variants"]
+
+
+# -- Step 5: case --
+
+
+def test_normalize_case_lower(tmp_path: Path) -> None:
+    data = {
+        "toc": {"definitions": {"Noun": ["thing"]}},
+        "entry": {"variants": ["Toc"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "toc" in result["entry"]["variants"]
+
+
+def test_normalize_case_decap(tmp_path: Path) -> None:
+    data = {
+        "öffentlicher Nahverkehr": {"definitions": {"Noun": ["transit"]}},
+        "entry": {"variants": ["Öffentlicher Nahverkehr"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "öffentlicher Nahverkehr" in result["entry"]["variants"]
+
+
+# -- Step 6: bidi --
+
+
+def test_bidi_normalize_greek_accent(tmp_path: Path) -> None:
+    """Greek acute ψιλοί vs grave ψιλοὶ — both strip to ψιλοι."""
+    data = {
+        "\u03C8\u03B9\u03BB\u03BF\u03AF": {"definitions": {"Adj": ["light"]}},  # ψιλοί
+        "entry": {"variants": ["\u03C8\u03B9\u03BB\u03BF\u1F76"]},  # ψιλοὶ
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "\u03C8\u03B9\u03BB\u03BF\u03AF" in result["entry"]["variants"]
+
+
+def test_bidi_normalize_russian_yo(tmp_path: Path) -> None:
+    """Russian ё (U+0451) headword, е (U+0435) target — bidi strips diaeresis."""
+    data = {
+        "\u0447\u0451\u0442\u043A\u0438\u0439": {"definitions": {"Adj": ["clear"]}},  # чёткий
+        "entry": {"variants": ["\u0447\u0435\u0442\u043A\u0438\u0439"]},  # четкий
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "\u0447\u0451\u0442\u043A\u0438\u0439" in result["entry"]["variants"]
+
+
+# -- Step 7: punctuation --
+
+
+def test_normalize_interpunct(tmp_path: Path) -> None:
+    data = {
+        "dogní": {"definitions": {"Verb": ["does"]}},
+        "entry": {"variants": ["do\u00B7gní"]},  # do·gní
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "dogní" in result["entry"]["variants"]
+
+
+def test_normalize_dot_strip(tmp_path: Path) -> None:
+    data = {
+        "EU": {"definitions": {"Noun": ["union"]}},
+        "entry": {"variants": ["E.U."]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "EU" in result["entry"]["variants"]
+
+
+def test_normalize_smart_quote(tmp_path: Path) -> None:
+    data = {
+        "Rus'": {"definitions": {"Noun": ["place"]}},
+        "entry": {"variants": ["Rus\u2019"]},  # Rus' with curly quote
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "Rus'" in result["entry"]["variants"]
+
+
+def test_normalize_dash(tmp_path: Path) -> None:
+    data = {
+        "a-b": {"definitions": {"Noun": ["thing"]}},
+        "entry": {"variants": ["a\u2013b"]},  # en-dash
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "a-b" in result["entry"]["variants"]
+
+
+# -- Step 8: spacing --
+
+
+def test_normalize_hyphen_to_space(tmp_path: Path) -> None:
+    data = {
+        "hand held": {"definitions": {"Adj": ["portable"]}},
+        "entry": {"variants": ["hand-held"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "hand held" in result["entry"]["variants"]
+
+
+def test_normalize_space_to_hyphen(tmp_path: Path) -> None:
+    data = {
+        "pied-noir": {"definitions": {"Noun": ["person"]}},
+        "entry": {"variants": ["pied noir"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "pied-noir" in result["entry"]["variants"]
+
+
+# -- Step 9: article --
+
+
+def test_normalize_strip_article(tmp_path: Path) -> None:
+    data = {
+        "Philippines": {"definitions": {"Noun": ["country"]}},
+        "entry": {"variants": ["the Philippines"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "Philippines" in result["entry"]["variants"]
+
+
+def test_normalize_add_article(tmp_path: Path) -> None:
+    data = {
+        "the pond": {"definitions": {"Noun": ["Atlantic"]}},
+        "entry": {"variants": ["pond"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "the pond" in result["entry"]["variants"]
+
+
+# -- Step 10: reflexive --
+
+
+def test_normalize_reflexive_french(tmp_path: Path) -> None:
+    data = {
+        "échapper": {"definitions": {"Verb": ["escape"]}},
+        "entry": {"variants": ["s\u2019échapper"]},  # s'échapper
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "échapper" in result["entry"]["variants"]
+
+
+def test_normalize_sich_german(tmp_path: Path) -> None:
+    data = {
+        "umziehen": {"definitions": {"Verb": ["move"]}},
+        "entry": {"variants": ["sich umziehen"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "umziehen" in result["entry"]["variants"]
+
+
+# -- Step 11: Japanese する --
+
+
+def test_normalize_ja_suru(tmp_path: Path) -> None:
+    data = {
+        "\u4F1D\u8A00": {"definitions": {"Noun": ["message"]}},  # 伝言
+        "entry": {"variants": ["\u4F1D\u8A00\u3059\u308B"]},  # 伝言する
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "\u4F1D\u8A00" in result["entry"]["variants"]
+
+
+# -- Step 12: comma split --
+
+
+def test_normalize_comma_split_both_exist(tmp_path: Path) -> None:
+    data = {
+        "femur": {"definitions": {"Noun": ["bone"]}},
+        "femen": {"definitions": {"Noun": ["thigh"]}},
+        "femina": {"variants": ["femur,femen"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["femina"]["variants"]
+    assert "femur" in variants, "first comma part"
+    assert "femen" in variants, "second comma part"
+
+
+def test_normalize_comma_split_one_exists(tmp_path: Path) -> None:
+    data = {
+        "femur": {"definitions": {"Noun": ["bone"]}},
+        "femina": {"variants": ["femur,nonexistent"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    variants = result["femina"]["variants"]
+    assert "femur" in variants
+
+
+# -- Step 13: chain resolution --
+
+
+def test_resolve_chain_multi_target(tmp_path: Path) -> None:
+    """Chain resolver tries all targets, not just the first."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["dead", "c"]},
+        "dead": {},
+        "c": {"definitions": {"Noun": ["thing"]}},
+    }
+    headwords = set(data.keys())
+    base_map = {}
+    result = _resolve_variant_chain("a", data, {"c"}, headwords, base_map)
+    assert result == "c"
+
+
+def test_resolve_chain_normalizes_at_each_step(tmp_path: Path) -> None:
+    """Chain resolver applies normalization at intermediate nodes."""
+    from engrish.pipeline import _build_base_form_map, _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["B"]},  # B needs case normalization to find "b"
+        "b": {"variants": ["c"]},
+        "c": {"definitions": {"Noun": ["thing"]}},
+    }
+    headwords = set(data.keys())
+    base_map = _build_base_form_map(headwords)
+    result = _resolve_variant_chain("a", data, {"c"}, headwords, base_map)
+    assert result == "c"
+
+
+# -- Step 14: cleanup --
+
+
+def test_cleanup_drops_dangling(tmp_path: Path) -> None:
+    """Targets that don't resolve to any headword are dropped."""
+    data = {
+        "entry": {"variants": ["nonexistent"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "variants" not in result["entry"]
+
+
+def test_cleanup_drops_dead_chain(tmp_path: Path) -> None:
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["c"]},
+        "c": {},  # dead end — no definitions
+    }
+    result = _run_normalize(tmp_path, data)
+    # "b" and "c" exist as headwords so they're kept, but "a" variant to "b"
+    # is kept because "b" IS a headword (even without definitions)
+    assert "b" in result["a"]["variants"]
+
+
+def test_cleanup_drops_cycle(tmp_path: Path) -> None:
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["a"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    # Both exist as headwords, so cross-references are kept
+    assert "b" in result["a"]["variants"]
+    assert "a" in result["b"]["variants"]
+
+
+def test_cleanup_preserves_valid_and_definitions(tmp_path: Path) -> None:
+    """Entry with both definitions and variants: defs untouched, valid variants kept."""
+    data = {
+        "target": {"definitions": {"Noun": ["thing"]}},
+        "entry": {
+            "definitions": {"Adj": ["quality"]},
+            "variants": ["target", "nonexistent"],
+        },
+    }
+    result = _run_normalize(tmp_path, data)
+    assert result["entry"]["definitions"] == {"Adj": ["quality"]}
+    assert "target" in result["entry"]["variants"]
+    assert "nonexistent" not in result["entry"].get("variants", [])
+
+
+def test_cleanup_removes_self_reference(tmp_path: Path) -> None:
+    data = {
+        "entry": {"definitions": {"Noun": ["thing"]}, "variants": ["entry"]},
+    }
+    result = _run_normalize(tmp_path, data)
+    assert "variants" not in result["entry"]
+
+
+# -- Backward compat: existing chain tests with new signature --
+
+
+def test_resolve_variant_chain_compat() -> None:
+    """Original chain test with updated function signature."""
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["c"]},
+        "c": {"definitions": {"Noun": ["a thing"]}},
+    }
+    defs = {"c"}
+    headwords = set(data.keys())
+
+    assert _resolve_variant_chain("a", data, defs, headwords, {}) == "c"
+    assert _resolve_variant_chain("b", data, defs, headwords, {}) == "c"
+    assert _resolve_variant_chain("c", data, defs, headwords, {}) == "c"
+
+
+def test_resolve_variant_chain_cycle_compat() -> None:
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {"variants": ["a"]},
+    }
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
+
+
+def test_resolve_variant_chain_dead_end_compat() -> None:
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["b"]},
+        "b": {},
+    }
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
+
+
+def test_resolve_variant_chain_missing_target_compat() -> None:
+    from engrish.pipeline import _resolve_variant_chain
+
+    data = {
+        "a": {"variants": ["nonexistent"]},
+    }
+    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
 
 
 # ---------------------------------------------------------------------------

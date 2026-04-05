@@ -402,6 +402,162 @@ def _find_missing_words(
 
 
 # ---------------------------------------------------------------------------
+# Source data cleanup examples
+# ---------------------------------------------------------------------------
+
+_CLEANUP_CATEGORIES = [
+    ("anchor", "Anchor/Fragment",
+     "Wiktionary section anchors (#) and alternate form separators (//) stripped."),
+    ("zwnj", "Zero-Width Non-Joiner",
+     "Persian/Arabic ZWNJ characters removed or replaced with spaces."),
+    ("nfkc", "NFKC Normalization",
+     "Fullwidth characters, Arabic presentation forms, CJK radicals, and compatibility characters normalized to standard Unicode forms."),
+    ("combining", "Combining Mark",
+     "Diacritical combining marks stripped to match base headword."),
+    ("case", "Case Normalization",
+     "Capitalization differences resolved (lowercase, capitalize, decapitalize)."),
+    ("bidi", "Bidirectional Match",
+     "Both target and headword stripped to a common base form to find a match (e.g. Greek accent direction, Russian \u0451/\u0435)."),
+    ("punct", "Punctuation",
+     "Interpuncts, dots, dashes, smart quotes, apostrophe variants, and tatweel normalized."),
+    ("spacing", "Spacing",
+     "Hyphens and spaces interchanged or removed to find a match."),
+    ("article", "Article",
+     "Leading articles (the/a/an) stripped or added."),
+    ("reflexive", "Reflexive",
+     "Romance se/s\u2019 and German sich prefixes stripped."),
+    ("suru", "Japanese \u3059\u308B",
+     "Japanese verb \u3059\u308B suffix stripped to match the noun/stem headword."),
+    ("comma", "Comma Split",
+     "Comma-separated targets split into individual headwords."),
+    ("dangling", "Dropped (Unresolvable)",
+     "Targets with no matching headword in the source data, removed during cleanup."),
+]
+
+_MAX_EXAMPLES_PER_CATEGORY = 3
+
+
+def _find_cleanup_examples(
+    locale_data: dict[str, dict[str, tuple[list[str], str]]],
+) -> list[dict]:
+    """Find examples of each normalization category from source data.
+
+    Returns only categories that have at least one example.
+    """
+    import json
+
+    from .paths import render_source_dir
+    from .pipeline import (
+        _build_base_form_map,
+        _try_article_normalize,
+        _try_bidi_normalize,
+        _try_case_normalize,
+        _try_comma_split,
+        _try_nfkc,
+        _try_normalize_zwnj,
+        _try_punct_normalize,
+        _try_reflexive_normalize,
+        _try_spacing_normalize,
+        _try_strip_anchor,
+        _try_strip_combining,
+        _try_suru_normalize,
+    )
+
+    # Per-category: count + examples
+    counts: dict[str, int] = {key: 0 for key, _, _ in _CLEANUP_CATEGORIES}
+    examples: dict[str, list[dict]] = {key: [] for key, _, _ in _CLEANUP_CATEGORIES}
+    # Track which locales already have an example per category (prefer diversity)
+    locale_seen: dict[str, set[str]] = {key: set() for key, _, _ in _CLEANUP_CATEGORIES}
+
+    for code in locale_data:
+        locale_name = _locale_label(code)
+        render_dir = render_source_dir(code)
+        jsons = sorted(render_dir.glob("data-*.json"))
+        if not jsons:
+            continue
+
+        source = json.loads(jsons[-1].read_text("utf-8"))
+        headwords = set(source.keys())
+        base_map = _build_base_form_map(headwords)
+
+        for hw, entry in source.items():
+            variants = entry.get("variants")
+            if not variants:
+                continue
+            for target in variants:
+                if target in headwords:
+                    continue
+
+                # Test each normalizer individually, in order.
+                # First match determines the category.
+                categorized = False
+                normalizers = [
+                    ("anchor", lambda t: _try_strip_anchor(t, headwords)),
+                    ("zwnj", lambda t: _try_normalize_zwnj(t, headwords)),
+                    ("nfkc", lambda t: _try_nfkc(t, headwords)),
+                    ("combining", lambda t: _try_strip_combining(t, headwords)),
+                    ("case", lambda t: _try_case_normalize(t, headwords)),
+                    ("bidi", lambda t: _try_bidi_normalize(t, headwords, base_map)),
+                    ("punct", lambda t: (_try_punct_normalize(t, headwords) or [None])[0]),
+                    ("spacing", lambda t: (_try_spacing_normalize(t, headwords) or [None])[0]),
+                    ("article", lambda t: _try_article_normalize(t, headwords)),
+                    ("reflexive", lambda t: _try_reflexive_normalize(t, headwords)),
+                    ("suru", lambda t: _try_suru_normalize(t, headwords)),
+                    ("comma", lambda t: (_try_comma_split(t, headwords) or [None])[0]),
+                ]
+
+                for cat_key, normalizer in normalizers:
+                    resolved = normalizer(target)
+                    if resolved:
+                        counts[cat_key] += 1
+                        exs = examples[cat_key]
+                        if (
+                            len(exs) < _MAX_EXAMPLES_PER_CATEGORY
+                            and code not in locale_seen[cat_key]
+                        ):
+                            exs.append({
+                                "locale": locale_name,
+                                "original": target,
+                                "normalized": resolved,
+                                "headword": hw,
+                            })
+                            locale_seen[cat_key].add(code)
+                        categorized = True
+                        break
+
+                if not categorized:
+                    # Dangling — no normalizer fixed it
+                    counts["dangling"] += 1
+                    exs = examples["dangling"]
+                    if (
+                        len(exs) < _MAX_EXAMPLES_PER_CATEGORY
+                        and code not in locale_seen["dangling"]
+                    ):
+                        exs.append({
+                            "locale": locale_name,
+                            "original": target,
+                            "normalized": "\u2014",  # em-dash for "none"
+                            "headword": hw,
+                        })
+                        locale_seen["dangling"].add(code)
+
+    # Build result — only categories with examples
+    result = []
+    for key, name, description in _CLEANUP_CATEGORIES:
+        if not examples[key]:
+            continue
+        result.append({
+            "name": name,
+            "anchor": f"cleanup-{key}",
+            "description": description,
+            "count": counts[key],
+            "examples": examples[key],
+        })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # EPUB assembly
 # ---------------------------------------------------------------------------
 
@@ -482,6 +638,22 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
             locale_name=locale_name, words=words
         )
         chapter_html[ch_file] = page_tpl.render(title=locale_name, content=spot_content)
+
+    # Source Data Cleanup
+    ch_id, ch_file = "source-cleanup", "source_cleanup.html"
+    cleanup_categories = _find_cleanup_examples(locale_data)
+    cleanup_children = [
+        SubChapterInfo(id="cleanup-overview", filename=f"{ch_file}#cleanup-overview", title="Overview"),
+    ] + [
+        SubChapterInfo(id=cat["anchor"], filename=f"{ch_file}#{cat['anchor']}", title=cat["name"])
+        for cat in cleanup_categories
+    ]
+    chapters.append(ChapterInfo(
+        id=ch_id, filename=ch_file, title="Source Data Cleanup",
+        children=cleanup_children, nav_target=f"{ch_file}#top",
+    ))
+    cleanup_content = env.get_template("source_cleanup.xhtml.j2").render(categories=cleanup_categories)
+    chapter_html[ch_file] = page_tpl.render(title="Source Data Cleanup", content=cleanup_content)
 
     # Missing words
     ch_id, ch_file = "missing", "missing.html"
