@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from .config import EPUB_BASE_FONTS, FONTS_DIR, FORM_NAMES, _ENGRISH_CFG
+from .config import FORM_NAMES, _ENGRISH_CFG
 from .merge import normalize_res_filename, parse_df
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
@@ -30,85 +30,29 @@ _CONTAINER_XML = """\
 </container>
 """
 
-# Build font index from whatever font files exist in FONTS_DIR.
-# Stem is extracted from filename: "NotoSansArabic[wght].ttf" -> "NotoSansArabic"
-_FONT_INDEX: dict[str, Path] = {}
-for _f in sorted(FONTS_DIR.glob("*")):
-    if _f.suffix in (".ttf", ".otf"):
-        _stem = _f.stem.split("[")[0].split("-")[0]
-        _FONT_INDEX[_stem] = _f
 
 
-def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
-    """Return (font_stem, filename) pairs needed for the given locales.
-
-    Reads the 'fonts' list from each locale's engrish.json entry, unions them,
-    deduplicates, and sorts by file size (smallest first so common scripts
-    appear first in the CSS font-family cascade).
-
-    Raises if any locale is missing the 'fonts' field or references a font
-    file not present in the fonts directory.
-    """
-    needed: set[str] = set(EPUB_BASE_FONTS)
-    for locale in locales:
-        if locale not in _ENGRISH_CFG:
-            raise ValueError(f"Locale '{locale}' not found in engrish.json")
-        cfg = _ENGRISH_CFG[locale]
-        if "fonts" not in cfg:
-            raise ValueError(
-                f"Locale '{locale}' is missing the 'fonts' field in engrish.json"
-            )
-        needed.update(cfg["fonts"])
-
-    missing = needed - set(_FONT_INDEX)
-    if missing:
-        raise FileNotFoundError(
-            f"Font files not found in {FONTS_DIR}: {sorted(missing)}"
-        )
-
-    return [
-        (stem, _FONT_INDEX[stem].name)
-        for stem in sorted(needed, key=lambda s: -_FONT_INDEX[s].stat().st_size)
-    ]
-
-
-def _build_css(fonts: list[tuple[str, str]]) -> str:
-    """Build CSS with @font-face declarations and font-family cascade."""
-    parts = []
-    for stem, filename in fonts:
-        media_type = "font/otf" if filename.endswith(".otf") else "truetype"
-        fmt = "opentype" if filename.endswith(".otf") else "truetype"
-        parts.append(
-            f"@font-face {{\n"
-            f"  font-family: '{stem}';\n"
-            f"  src: url('fonts/{filename}') format('{fmt}');\n"
-            f"}}"
-        )
-
-    family_list = ", ".join(f"'{stem}'" for stem, _ in fonts) + ", serif"
-    parts.append(
-        f"body {{\n"
-        f"  font-family: {family_list};\n"
-        f"}}\n"
-        f"h1 {{\n"
-        f"  text-decoration: underline;\n"
-        f"}}\n"
-        f"h3 {{\n"
-        f"  font-weight: normal;\n"
-        f"}}\n"
-        f"table {{\n"
-        f"  margin: 1em 0;\n"
-        f"}}\n"
-        f"th, td {{\n"
-        f"  padding: 0.3em 0.8em;\n"
-        f"  text-align: left;\n"
-        f"  border-bottom: 1px solid #999;\n"
-        f"}}\n"
-        f"th {{\n"
-        f"  background-color: #eee;\n"
-        f"}}"
+def _build_css() -> str:
+    """Build structural CSS for EPUB pages."""
+    return (
+        "h1 {\n"
+        "  text-decoration: underline;\n"
+        "}\n"
+        "h3 {\n"
+        "  font-weight: normal;\n"
+        "}\n"
+        "table {\n"
+        "  margin: 1em 0;\n"
+        "}\n"
+        "th, td {\n"
+        "  padding: 0.3em 0.8em;\n"
+        "  text-align: left;\n"
+        "  border-bottom: 1px solid #999;\n"
+        "}\n"
+        "th {\n"
+        "  background-color: #eee;\n"
+        "}\n"
     )
-    return "\n".join(parts) + "\n"
 
 
 def _locale_label(code: str) -> str:
@@ -312,19 +256,6 @@ def _cross_language_words(
 
     selected = _pick_constrained(sorted(shared), entries_fn, n, exclude)
 
-    # If not enough shared words, fill with words that maximize locale coverage
-    if len(selected) < n:
-        used = set(selected) | exclude
-        for code in codes:
-            for word in locale_data[code]:
-                if word not in used:
-                    selected.append(word)
-                    used.add(word)
-                    if len(selected) >= n:
-                        break
-            if len(selected) >= n:
-                break
-
     entries = []
     for word in selected:
         locale_entries = []
@@ -351,6 +282,9 @@ def _spot_check_words(
 
     selected = _pick_constrained(sorted(entries), entries_fn, n, exclude)
     return [_extract_meta(w, entries[w][0], entries[w][1], locale_name) for w in selected]
+
+
+_MAX_MISSING_WORDS = 1000
 
 
 def _find_missing_words(
@@ -382,17 +316,26 @@ def _find_missing_words(
                     dump_words.add(title)
 
             df_words = set(locale_data[code].keys())
-            missing = sorted(dump_words - df_words)
+            df_syns: set[str] = set()
+            for word, (syns, html) in locale_data[code].items():
+                df_syns.update(syns)
+            missing = sorted(dump_words - df_words - df_syns)
+
+            # Cap word list at 1000 to keep HTML size manageable
+            total_missing = len(missing)
+            truncated = total_missing > _MAX_MISSING_WORDS
+            display_missing = missing[:_MAX_MISSING_WORDS]
 
             # Format into rows of 5 comma-separated words
             word_rows = []
-            for i in range(0, len(missing), 5):
-                word_rows.append(", ".join(missing[i:i + 5]))
+            for i in range(0, len(display_missing), 5):
+                word_rows.append(", ".join(display_missing[i:i + 5]))
 
             results.append({
                 "name": _locale_label(code),
                 "code": code,
-                "missing_count": len(missing),
+                "missing_count": total_missing,
+                "truncated": truncated,
                 "word_rows": word_rows,
             })
     finally:
@@ -436,145 +379,74 @@ _CLEANUP_CATEGORIES = [
      "Targets with no matching headword in the source data, removed during cleanup."),
 ]
 
-_MAX_EXAMPLES_PER_CATEGORY = 3
-
-
 def _find_cleanup_examples(
     locale_data: dict[str, dict[str, tuple[list[str], str]]],
 ) -> list[dict]:
-    """Find examples of each normalization category from source data.
+    """Read normalization stats from sidecar files written during pipeline execution.
 
-    Returns only categories that have at least one example.
+    Each locale's render directory may contain a normalize-stats.json with
+    per-category counts and examples collected during normalize_variant_targets.
     """
     import json
 
     from .paths import render_source_dir
-    from .pipeline import (
-        _build_base_form_map,
-        _try_article_normalize,
-        _try_bidi_normalize,
-        _try_case_normalize,
-        _try_comma_split,
-        _try_nfkc,
-        _try_normalize_zwnj,
-        _try_punct_normalize,
-        _try_reflexive_normalize,
-        _try_spacing_normalize,
-        _try_strip_anchor,
-        _try_strip_combining,
-        _try_suru_normalize,
-    )
 
-    # Per-category: count + examples
-    counts: dict[str, int] = {key: 0 for key, _, _ in _CLEANUP_CATEGORIES}
-    examples: dict[str, list[dict]] = {key: [] for key, _, _ in _CLEANUP_CATEGORIES}
-    # Track which locales already have an example per category (prefer diversity)
-    locale_seen: dict[str, set[str]] = {key: set() for key, _, _ in _CLEANUP_CATEGORIES}
+    # Merge stats across locales
+    merged_counts: dict[str, int] = {}
+    merged_examples: dict[str, list[dict]] = {}
 
     for code in locale_data:
         locale_name = _locale_label(code)
-        render_dir = render_source_dir(code)
-        jsons = sorted(render_dir.glob("data-*.json"))
-        if not jsons:
+        stats_path = render_source_dir(code) / "normalize-stats.json"
+        if not stats_path.exists():
             continue
 
-        source = json.loads(jsons[-1].read_text("utf-8"))
-        headwords = set(source.keys())
-        base_map = _build_base_form_map(headwords)
+        stats = json.loads(stats_path.read_text("utf-8"))
+        for cat, info in stats.items():
+            merged_counts[cat] = merged_counts.get(cat, 0) + info["count"]
+            exs = merged_examples.setdefault(cat, [])
+            for ex in info.get("examples", []):
+                if len(exs) < 3:
+                    exs.append({
+                        "locale": locale_name,
+                        "original": ex["original"],
+                        "normalized": ex["normalized"],
+                        "headword": ex["headword"],
+                    })
 
-        for hw, entry in source.items():
-            variants = entry.get("variants")
-            if not variants:
-                continue
-            for target in variants:
-                if target in headwords:
-                    continue
-
-                # Test each normalizer individually, in order.
-                # First match determines the category.
-                categorized = False
-                normalizers = [
-                    ("anchor", lambda t: _try_strip_anchor(t, headwords)),
-                    ("zwnj", lambda t: _try_normalize_zwnj(t, headwords)),
-                    ("nfkc", lambda t: _try_nfkc(t, headwords)),
-                    ("combining", lambda t: _try_strip_combining(t, headwords)),
-                    ("case", lambda t: _try_case_normalize(t, headwords)),
-                    ("bidi", lambda t: _try_bidi_normalize(t, headwords, base_map)),
-                    ("punct", lambda t: (_try_punct_normalize(t, headwords) or [None])[0]),
-                    ("spacing", lambda t: (_try_spacing_normalize(t, headwords) or [None])[0]),
-                    ("article", lambda t: _try_article_normalize(t, headwords)),
-                    ("reflexive", lambda t: _try_reflexive_normalize(t, headwords)),
-                    ("suru", lambda t: _try_suru_normalize(t, headwords)),
-                    ("comma", lambda t: (_try_comma_split(t, headwords) or [None])[0]),
-                ]
-
-                for cat_key, normalizer in normalizers:
-                    resolved = normalizer(target)
-                    if resolved:
-                        counts[cat_key] += 1
-                        exs = examples[cat_key]
-                        if (
-                            len(exs) < _MAX_EXAMPLES_PER_CATEGORY
-                            and code not in locale_seen[cat_key]
-                        ):
-                            exs.append({
-                                "locale": locale_name,
-                                "original": target,
-                                "normalized": resolved,
-                                "headword": hw,
-                            })
-                            locale_seen[cat_key].add(code)
-                        categorized = True
-                        break
-
-                if not categorized:
-                    # Dangling — no normalizer fixed it
-                    counts["dangling"] += 1
-                    exs = examples["dangling"]
-                    if (
-                        len(exs) < _MAX_EXAMPLES_PER_CATEGORY
-                        and code not in locale_seen["dangling"]
-                    ):
-                        exs.append({
-                            "locale": locale_name,
-                            "original": target,
-                            "normalized": "\u2014",  # em-dash for "none"
-                            "headword": hw,
-                        })
-                        locale_seen["dangling"].add(code)
-
-    # Image scanning — find entries with res/ file references in definition HTML
+    # Image scanning — still done live since it reads .df HTML, not render JSON
+    img_count = 0
+    img_examples: list[dict] = []
     for code in locale_data:
         locale_name = _locale_label(code)
         for hw, (_, html) in locale_data[code].items():
             for m in re.finditer(r'src="(res/([^"]+))"', html):
                 raw_path = m.group(1)
                 rel = m.group(2)
-                counts["images"] += 1
-                exs = examples["images"]
-                if (
-                    len(exs) < _MAX_EXAMPLES_PER_CATEGORY
-                    and code not in locale_seen["images"]
-                ):
-                    exs.append({
+                img_count += 1
+                if len(img_examples) < 3:
+                    img_examples.append({
                         "locale": locale_name,
                         "original": raw_path,
                         "normalized": f"res/{normalize_res_filename(rel, code)}",
                         "headword": hw,
                     })
-                    locale_seen["images"].add(code)
+    if img_count:
+        merged_counts["images"] = img_count
+        merged_examples["images"] = img_examples
 
-    # Build result — only categories with examples
+    # Build result — only categories with data
+    cat_lookup = {key: (name, desc) for key, name, desc in _CLEANUP_CATEGORIES}
     result = []
     for key, name, description in _CLEANUP_CATEGORIES:
-        if not examples[key]:
+        if key not in merged_counts or merged_counts[key] == 0:
             continue
         result.append({
             "name": name,
             "anchor": f"cleanup-{key}",
             "description": description,
-            "count": counts[key],
-            "examples": examples[key],
+            "count": merged_counts[key],
+            "examples": merged_examples.get(key, []),
         })
 
     return result
@@ -612,8 +484,7 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
     # Cover
     ch_id, ch_file = "cover", "cover.html"
     chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Cover"))
-    display_names = " + ".join(FORM_NAMES.get(c, c) for c in active_codes)
-    cover_content = env.get_template("cover.xhtml.j2").render(form=form, display_names=display_names)
+    cover_content = env.get_template("cover.xhtml.j2").render()
     chapter_html[ch_file] = page_tpl.render(title="Engrish Dictionary Sampler", content=cover_content)
 
     # Summary
@@ -693,22 +564,9 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
     missing_content = env.get_template("missing.xhtml.j2").render(locales=missing_locales)
     chapter_html[ch_file] = page_tpl.render(title="Missing", content=missing_content)
 
-    # -- Fonts --
-    fonts = _fonts_for_locales(locales)
-    css = _build_css(fonts)
-
-    font_data: dict[str, bytes] = {}
-    for stem, filename in fonts:
-        fp = FONTS_DIR / filename
-        if not fp.exists():
-            raise FileNotFoundError(
-                f"Required font not found: {fp}\n"
-                f"Download Noto Sans fonts and place them in {FONTS_DIR}"
-            )
-        font_data[filename] = fp.read_bytes()
-
-    # -- Render OPF and NCX --
-    opf = env.get_template("content.opf.j2").render(form=form, chapters=chapters, fonts=fonts)
+    # -- CSS + OPF + NCX --
+    css = _build_css()
+    opf = env.get_template("content.opf.j2").render(form=form, chapters=chapters, fonts=[])
     ncx = env.get_template("toc.ncx.j2").render(form=form, chapters=chapters)
 
     # -- Write EPUB --
@@ -719,8 +577,6 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
         zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/styles.css", css, compress_type=zipfile.ZIP_DEFLATED)
-        for filename, data in font_data.items():
-            zf.writestr(f"OEBPS/fonts/{filename}", data, compress_type=zipfile.ZIP_STORED)
         for filename, html in chapter_html.items():
             zf.writestr(f"OEBPS/{filename}", html, compress_type=zipfile.ZIP_DEFLATED)
 

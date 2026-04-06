@@ -17,6 +17,9 @@
 
 {% for locale in locales %}
 <h2 id="{{ locale.anchor }}">{{ locale.name }}</h2>
+{% if locale.truncated %}
+<p><em>(showing first 1,000 of {{ "{:,}".format(locale.missing_count) }})</em></p>
+{% endif %}
 <p>
 {%- for row in locale.word_rows %}
 {{ row }}{% if not loop.last %}<br/>{% endif %}

@@ -347,6 +347,32 @@ def normalize_variant_targets(locale: str) -> None:
     dangling_dropped = 0
     cleanup_modified = 0
 
+    # Stats collection for epub cleanup chapter
+    _MAX_STATS_EXAMPLES = 3
+    _NORMALIZER_NAMES = [
+        ("anchor", _try_strip_anchor),
+        ("zwnj", _try_normalize_zwnj),
+        ("nfkc", _try_nfkc),
+        ("combining", _try_strip_combining),
+        ("case", _try_case_normalize),
+        ("punct", _try_punct_normalize),
+        ("spacing", _try_spacing_normalize),
+        ("article", _try_article_normalize),
+        ("reflexive", _try_reflexive_normalize),
+        ("suru", _try_suru_normalize),
+        ("comma", _try_comma_split),
+    ]
+    stats_counts: dict[str, int] = {name: 0 for name, _ in _NORMALIZER_NAMES}
+    stats_counts["bidi"] = 0
+    stats_counts["dangling"] = 0
+    stats_examples: dict[str, list[dict]] = {k: [] for k in stats_counts}
+
+    def _record_stat(cat: str, headword: str, original: str, resolved: str) -> None:
+        stats_counts[cat] += 1
+        exs = stats_examples[cat]
+        if len(exs) < _MAX_STATS_EXAMPLES:
+            exs.append({"headword": headword, "original": original, "normalized": resolved})
+
     # Passes 1–11: direct normalization — keep originals, add resolved forms
     for word, entry in data.items():
         variants = entry.get("variants")
@@ -357,11 +383,36 @@ def normalize_variant_targets(locale: str) -> None:
             new_variants.append(target)
             if target in headwords:
                 continue
+            # Run all normalizations (for the variant list)
             resolved = _try_all_normalizations(target, headwords, base_map)
             for r in resolved:
                 if r not in new_variants:
                     new_variants.append(r)
                     normalized += 1
+            # Categorize for stats: run individually, first match wins
+            if resolved:
+                categorized = False
+                for cat, normalizer in _NORMALIZER_NAMES:
+                    if cat in ("punct", "spacing", "comma"):
+                        result = normalizer(target, headwords)
+                        if result:
+                            _record_stat(cat, word, target, result[0])
+                            categorized = True
+                            break
+                    elif cat == "bidi":
+                        continue  # handled separately below
+                    else:
+                        result = normalizer(target, headwords)
+                        if result:
+                            _record_stat(cat, word, target, result)
+                            categorized = True
+                            break
+                if not categorized:
+                    result = _try_bidi_normalize(target, headwords, base_map)
+                    if result:
+                        _record_stat("bidi", word, target, result)
+            else:
+                _record_stat("dangling", word, target, "\u2014")
         entry["variants"] = new_variants
 
     # Pass 12: chain resolution — for targets not pointing to a defined entry,
@@ -432,6 +483,19 @@ def normalize_variant_targets(locale: str) -> None:
         if out.exists():
             shutil.rmtree(out)
             log.info("[%s] Cleared stale convert output", locale)
+
+    # Write normalization stats sidecar for epub cleanup chapter
+    stats_data = {}
+    for cat in stats_counts:
+        if stats_counts[cat] > 0:
+            stats_data[cat] = {
+                "count": stats_counts[cat],
+                "examples": stats_examples[cat],
+            }
+    if stats_data:
+        stats_path = render_dir / "normalize-stats.json"
+        stats_path.write_text(json.dumps(stats_data, ensure_ascii=False, indent=2), "utf-8")
+        log.info("[%s] Wrote normalization stats: %s", locale, stats_path)
 
 
 

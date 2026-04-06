@@ -21,27 +21,27 @@ done
 
 rm -r data/engrish
 
-./venv/bin/python engrish.py --keep-xml generate --all-singles --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ang+enm+en --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type grc+el --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type fro+frm+fr --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type fa+peo+pal --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ru+cu --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type got+non+ang --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+la+grc --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc+he+arc+syc+cop --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi+bo --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+fr+es+it --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+he+arc+syc --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+fa --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type zh+ja --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type egy+akk --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+ang+enm+fr --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es+ru --epub && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+enm+ang+es+fr+de+ru+it+el+la+fro+grc --epub
+./venv/bin/python engrish.py --keep-xml generate --all-singles --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ang+enm+en --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type grc+el --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type fro+frm+fr --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type fa+peo+pal --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ru+cu --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type got+non+ang --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+la+grc --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc+he+arc+syc+cop --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi+bo --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+fr+es+it --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+he+arc+syc --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+fa --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type zh+ja --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type egy+akk --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type la+ang+enm+fr --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es+ru --epub --font && \
+./venv/bin/python engrish.py --keep-xml generate --engrish-type en+enm+ang+es+fr+de+ru+it+el+la+fro+grc --epub --font
 
 # === Historical / Diachronic ===
 # ang+enm+en          # Comprehensive English

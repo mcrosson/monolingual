@@ -51,7 +51,7 @@ Downloads and decompresses the EN Wiktionary dump without generating anything. U
 ./venv/bin/python engrish.py generate --all-singles
 ```
 
-Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale. Add `--epub` to generate a sampler EPUB for each dictionary after building it.
+Downloads, parses, renders, and converts Wiktionary data into StarDict dictionaries. This takes a while on first run. `--all` builds every configured locale combined into one dictionary. `--all-singles` builds a separate single-language dictionary for each configured locale. Add `--epub` to generate a sampler EPUB for each dictionary after building it. Add `--font` to generate minimized fonts alongside dictionary files. Both flags can be used together.
 
 For multi-locale forms, the order of locale codes in `--engrish-type` controls display order — `ang+en` shows Old English definitions before Modern English, `en+ang` does the reverse.
 
@@ -68,7 +68,23 @@ Global flag — can be used with any subcommand. Keeps the decompressed Wiktiona
 
 Creates a sampler EPUB for smoke-testing dictionary rendering on your eBook reader. Each EPUB includes a cover, summary table, stress test with the largest entries, cross-language shared entries (for merged dictionaries), per-locale spot checks, and a missing words analysis. Use these to verify headwords, alternates, and pronunciations render correctly with the configured fonts before deploying the StarDict files.
 
-Fonts included in the EPUB come from the `epub_base_fonts` config (always included) plus each locale's `fonts` list. Run `update-fonts` before generating EPUBs to ensure all required font files are on disk.
+Run `update-fonts` before generating EPUBs to ensure all required font files are on disk.
+
+### Generate minimized fonts
+
+```bash
+./venv/bin/python engrish.py font --dict ang+en
+./venv/bin/python engrish.py font --all
+```
+
+Creates minimized font files containing only the codepoints needed to render dictionary entries. Output goes to `data/engrish/<form>/`. Four files are produced per dictionary:
+
+- `engrish-regular.ttf` — all scripts, regular weight
+- `engrish-bold.ttf` — all scripts, bold weight
+- `engrish-italic.ttf` — scripts with italic variants only (mainly Latin/Greek/Cyrillic)
+- `engrish-bold-italic.ttf` — scripts with italic variants only, bold weight
+
+Scripts without published italic font files (Arabic, Devanagari, CJK, etc.) are absent from italic files — the reader falls back to its default rendering for those scripts.
 
 ### Update fonts
 

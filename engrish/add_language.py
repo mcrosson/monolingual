@@ -68,7 +68,7 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
         log.info("Nothing to add")
         return 0
 
-    from .update_fonts import collect_headword_chars_batch, detect_fonts
+    from .font import collect_headword_chars_batch, detect_fonts
 
     # Single parallel scan of the dump for ALL languages being added.
     codes_to_add = [code for code, _ in to_add]

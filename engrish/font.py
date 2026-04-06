@@ -1,4 +1,4 @@
-"""update-fonts: download missing Noto Sans fonts referenced in engrish.json."""
+"""Font management: download, detect, and generate minimized dictionary fonts."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from .config import FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
+from .config import EPUB_BASE_FONTS, FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ _CJK_BASE = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/Subs
 _CJK_API = "https://api.github.com/repos/notofonts/noto-cjk/contents/Sans/SubsetOTF"
 _EMOJI_BASE = "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts"
 _EMOJI_API = "https://api.github.com/repos/googlefonts/noto-emoji/contents/fonts"
+_GOOGLE_FONTS_BASE = "https://raw.githubusercontent.com/google/fonts/main/ofl"
+_GOOGLE_FONTS_API = "https://api.github.com/repos/google/fonts/contents/ofl"
 
 
 def _existing_stems(fonts_dir: Path) -> set[str]:
@@ -78,6 +80,18 @@ def _candidate_urls(stem: str) -> list[tuple[str, str]]:
     urls.extend([
         (f"{_EMOJI_BASE}/{stem}-noflags.ttf", f"{stem}-noflags.ttf"),
         (f"{_EMOJI_BASE}/{stem}.ttf", f"{stem}.ttf"),
+    ])
+    # google/fonts repo (ofl directory) — additional Noto fonts not in notofonts.github.io
+    ofl_name = stem.lower()
+    urls.extend([
+        (
+            f"{_GOOGLE_FONTS_BASE}/{ofl_name}/{stem}%5Bwght%5D.ttf",
+            f"{stem}[wght].ttf",
+        ),
+        (
+            f"{_GOOGLE_FONTS_BASE}/{ofl_name}/{stem}-Regular.ttf",
+            f"{stem}-Regular.ttf",
+        ),
     ])
     return urls
 
@@ -169,6 +183,10 @@ def _discover_available_stems() -> tuple[set[str], set[str]]:
                         main_stems.add(stem)
     except requests.RequestException:
         log.warning("Could not query noto-emoji repo for emoji font discovery")
+    # google/fonts repo — used as a download fallback in _candidate_urls
+    # but not enumerated here (thousands of non-Noto entries).
+    # Fonts only in google/fonts are found via name-prefix matching
+    # and downloaded through _candidate_urls which includes google/fonts URLs.
     _cached_stems = (main_stems | cjk_stems, cjk_stems)
     return _cached_stems
 
@@ -532,7 +550,7 @@ def detect_fonts(
 # update-fonts command
 # ---------------------------------------------------------------------------
 
-def run() -> int:
+def run_update() -> int:
     """Download any fonts referenced in engrish.json but missing from disk."""
     needed: set[str] = set(SEED_FONTS)
     for cfg in _ENGRISH_CFG.values():
@@ -566,4 +584,402 @@ def run() -> int:
         return 1
 
     log.info("All missing fonts downloaded successfully")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Font index and locale font resolution (moved from epub.py)
+# ---------------------------------------------------------------------------
+
+# Build font index from whatever font files exist in FONTS_DIR.
+_FONT_INDEX: dict[str, Path] = {}
+for _f in sorted(FONTS_DIR.glob("*")):
+    if _f.suffix in (".ttf", ".otf"):
+        _stem = _f.stem.split("[")[0].split("-")[0]
+        _FONT_INDEX[_stem] = _f
+
+
+def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
+    """Return (font_stem, filename) pairs needed for the given locales.
+
+    Reads the 'fonts' list from each locale's engrish.json entry, unions them,
+    deduplicates, and sorts by file size (largest first so common scripts
+    appear first in the CSS font-family cascade).
+    """
+    needed: set[str] = set(EPUB_BASE_FONTS)
+    for locale in locales:
+        if locale not in _ENGRISH_CFG:
+            raise ValueError(f"Locale '{locale}' not found in engrish.json")
+        cfg = _ENGRISH_CFG[locale]
+        if "fonts" not in cfg:
+            raise ValueError(
+                f"Locale '{locale}' is missing the 'fonts' field in engrish.json"
+            )
+        needed.update(cfg["fonts"])
+
+    missing = needed - set(_FONT_INDEX)
+    if missing:
+        raise FileNotFoundError(
+            f"Font files not found in {FONTS_DIR}: {sorted(missing)}"
+        )
+
+    return [
+        (stem, _FONT_INDEX[stem].name)
+        for stem in sorted(needed, key=lambda s: -_FONT_INDEX[s].stat().st_size)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Minimized font generation (subset + merge)
+# ---------------------------------------------------------------------------
+
+
+def collect_codepoints(locales: list[str]) -> set[int]:
+    """Collect all unique codepoints from .df files for the given locales."""
+    from .paths import df_path
+
+    codepoints: set[int] = set()
+    for locale in locales:
+        path = df_path(locale, noetym=False)
+        if not path.exists():
+            log.warning("No .df for %s at %s, skipping", locale, path)
+            continue
+        text = path.read_text(encoding="utf-8")
+        codepoints.update(ord(ch) for ch in text)
+    return codepoints
+
+
+def _select_fonts(
+    dict_cps: set[int],
+    fonts_dir: Path,
+    *,
+    italic: bool = False,
+) -> list[tuple[str, Path, set[int]]]:
+    """Greedy set cover: pick fonts from fonts_dir covering dict_cps.
+
+    Skips CBDT-only fonts (no glyf, no CFF).
+    If italic=True, only includes fonts that have an italic variant file on disk.
+
+    Returns list of (stem, font_path, assigned_codepoints).
+    """
+    from fontTools.ttLib import TTFont
+
+    available: dict[str, tuple[Path, set[int]]] = {}
+    for fpath in sorted(fonts_dir.glob("*")):
+        if fpath.suffix not in (".ttf", ".otf"):
+            continue
+        if fpath.name.startswith("engrish"):
+            continue
+        # Skip italic files from the upright selection (they'll be used directly for italic builds)
+        if "-Italic" in fpath.name:
+            continue
+        stem = fpath.stem.split("[")[0].split("-")[0]
+        font = TTFont(fpath)
+        has_glyf = "glyf" in font
+        has_cff = "CFF " in font
+        cmap = font.getBestCmap() or {}
+        font.close()
+        if not has_glyf and not has_cff:
+            continue
+        if italic:
+            # Only include this font if an italic variant file exists
+            italic_file = _find_italic_file(stem, fonts_dir)
+            if not italic_file:
+                continue
+        available[stem] = (fpath, set(cmap.keys()))
+
+    remaining = set(dict_cps)
+    selected: list[tuple[str, Path, set[int]]] = []
+    while remaining:
+        best_stem = None
+        best_count = 0
+        for stem, (fpath, cmap_cps) in available.items():
+            overlap = len(remaining & cmap_cps)
+            if overlap > best_count:
+                best_stem = stem
+                best_count = overlap
+        if not best_stem or best_count == 0:
+            break
+        fpath, cmap_cps = available.pop(best_stem)
+        covered = remaining & cmap_cps
+        remaining -= covered
+        selected.append((best_stem, fpath, covered))
+
+    return selected
+
+
+def _find_italic_file(stem: str, fonts_dir: Path) -> Path | None:
+    """Find an italic variant font file for a stem on disk."""
+    for fpath in fonts_dir.glob("*"):
+        if fpath.suffix not in (".ttf", ".otf"):
+            continue
+        name = fpath.name
+        # Match patterns like NotoSans-Italic[wght].ttf or NotoSans-Italic-Regular.ttf
+        if name.startswith(f"{stem}-Italic"):
+            return fpath
+    return None
+
+
+def _download_italic(stem: str, fonts_dir: Path) -> bool:
+    """Download the italic variant for a font stem.
+
+    Italic files live under the parent family directory, not a separate
+    directory.  E.g. NotoSans-Italic[wght].ttf is at:
+      notofonts.github.io/fonts/NotoSans/unhinted/slim-variable-ttf/NotoSans-Italic[wght].ttf
+    """
+    italic_stem = f"{stem}-Italic"
+    urls = [
+        (
+            f"{_NOTO_BASE}/{stem}/unhinted/slim-variable-ttf/{italic_stem}%5Bwght%5D.ttf",
+            f"{italic_stem}[wght].ttf",
+        ),
+        (
+            f"{_NOTO_BASE}/{stem}/full/ttf/{italic_stem}-Regular.ttf",
+            f"{italic_stem}-Regular.ttf",
+        ),
+        (
+            f"{_GOOGLE_FONTS_BASE}/{stem.lower()}/{italic_stem}%5Bwght%5D.ttf",
+            f"{italic_stem}[wght].ttf",
+        ),
+        (
+            f"{_GOOGLE_FONTS_BASE}/{stem.lower()}/{italic_stem}-Regular.ttf",
+            f"{italic_stem}-Regular.ttf",
+        ),
+    ]
+    for url, filename in urls:
+        log.info("Trying italic: %s", url)
+        try:
+            resp = requests.get(url, timeout=60)
+        except requests.RequestException:
+            continue
+        if resp.status_code == 200:
+            dest = fonts_dir / filename
+            dest.write_bytes(resp.content)
+            log.info("Downloaded %s (%d bytes)", dest.name, len(resp.content))
+            return True
+        log.debug("  %d — %s", resp.status_code, url)
+    return False
+
+
+def _build_merged_font(
+    selected: list[tuple[str, Path, set[int]]],
+    wght: float,
+    output_path: Path,
+    *,
+    italic: bool = False,
+    fonts_dir: Path | None = None,
+) -> None:
+    """Subset, flatten, convert, and merge selected fonts into a single .ttf.
+
+    Args:
+        selected: list of (stem, upright_font_path, assigned_codepoints)
+        wght: weight value to pin variable fonts to (400 for regular, 700 for bold)
+        output_path: where to write the merged font
+        italic: if True, use italic variant files instead of upright
+        fonts_dir: directory to search for italic files (required if italic=True)
+    """
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.merge import Merger
+    from fontTools.pens.cu2quPen import Cu2QuPen
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    from fontTools.subset import Subsetter
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.scaleUpem import scale_upem
+    from fontTools.varLib.instancer import instantiateVariableFont
+
+    KEEP = {
+        "glyf", "cmap", "head", "hhea", "hmtx", "loca", "maxp",
+        "name", "post", "OS/2", "GSUB", "GPOS", "GDEF",
+    }
+
+    import tempfile
+
+    glyf_temps: list[str] = []
+    try:
+        for stem, upright_path, cps_to_keep in selected:
+            # Use italic file if requested
+            if italic and fonts_dir:
+                fpath = _find_italic_file(stem, fonts_dir)
+                if not fpath:
+                    continue
+            else:
+                fpath = upright_path
+
+            font = TTFont(fpath)
+
+            # Subset to assigned codepoints
+            sub = Subsetter()
+            sub.populate(unicodes=list(cps_to_keep))
+            sub.subset(font)
+
+            # Flatten variable fonts to target weight
+            if "fvar" in font:
+                axes = {}
+                for axis in font["fvar"].axes:
+                    if axis.axisTag == "wght":
+                        # Clamp to axis range
+                        axes["wght"] = max(axis.minValue, min(wght, axis.maxValue))
+                    else:
+                        axes[axis.axisTag] = axis.defaultValue
+                instantiateVariableFont(font, axes, inplace=True, overlap=0)
+
+            # Scale UPM if needed
+            if font["head"].unitsPerEm != 1000:
+                scale_upem(font, 1000)
+
+            # Convert CFF -> glyf
+            if "CFF " in font:
+                saved_tables = {t: font[t] for t in ("GSUB", "GPOS", "GDEF") if t in font}
+                gs = font.getGlyphSet()
+                go = font.getGlyphOrder()
+                cm = font.getBestCmap()
+                upm = font["head"].unitsPerEm
+                fb = FontBuilder(upm, isTTF=True)
+                fb.setupGlyphOrder(go)
+                fb.setupCharacterMap(cm)
+                gd: dict = {}
+                mt: dict = {}
+                for gn in go:
+                    tp = TTGlyphPen(None)
+                    cp = Cu2QuPen(tp, max_err=1.0, reverse_direction=True)
+                    gs[gn].draw(cp)
+                    gd[gn] = tp.glyph()
+                    mt[gn] = (gs[gn].width, 0)
+                fb.setupGlyf(gd)
+                fb.setupHorizontalMetrics(mt)
+                fb.setupHorizontalHeader(ascent=800, descent=-200)
+                fb.setupNameTable({"familyName": "Engrish", "styleName": "Regular"})
+                fb.setupOS2()
+                fb.setupPost()
+                fb.setupHead(unitsPerEm=upm)
+                font = fb.font
+                for t, v in saved_tables.items():
+                    font[t] = v
+
+            # Strip non-essential tables
+            for tag in list(font.keys()):
+                if tag not in KEEP:
+                    del font[tag]
+
+            tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+            font.save(tmp.name)
+            glyf_temps.append(tmp.name)
+            font.close()
+
+        if not glyf_temps:
+            log.warning("No fonts to merge for %s", output_path)
+            return
+
+        # Merge
+        merger = Merger()
+        merged = merger.merge(glyf_temps)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        merged.save(str(output_path))
+        merged.close()
+
+        log.info("Built %s (%d bytes)", output_path.name, output_path.stat().st_size)
+
+    finally:
+        import os
+        for f in glyf_temps:
+            os.unlink(f)
+
+
+def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None:
+    """Generate minimized font files for a dictionary form.
+
+    Produces 4 font files in output_dir:
+        engrish-regular.ttf     — all scripts, wght=400
+        engrish-bold.ttf        — all scripts, wght=700
+        engrish-italic.ttf      — italic-available scripts only, wght=400
+        engrish-bold-italic.ttf — italic-available scripts only, wght=700
+    """
+    if not form:
+        form = "+".join(locales)
+
+    dict_cps = collect_codepoints(locales)
+    if not dict_cps:
+        raise RuntimeError(f"No codepoints collected for form '{form}'")
+    log.info("Collected %d codepoints for form '%s'", len(dict_cps), form)
+
+    # Ensure italic variants are available for fonts that publish them
+    for fpath in sorted(FONTS_DIR.glob("*")):
+        if fpath.suffix not in (".ttf", ".otf") or fpath.name.startswith("engrish"):
+            continue
+        if "-Italic" in fpath.name:
+            continue
+        stem = fpath.stem.split("[")[0].split("-")[0]
+        if not _find_italic_file(stem, FONTS_DIR):
+            # Only try downloading for stems likely to have italic (variable weight fonts)
+            from fontTools.ttLib import TTFont
+            f = TTFont(fpath)
+            has_fvar = "fvar" in f
+            f.close()
+            if has_fvar:
+                _download_italic(stem, FONTS_DIR)
+
+    # Select fonts for upright variants (all scripts)
+    upright_selected = _select_fonts(dict_cps, FONTS_DIR, italic=False)
+    log.info("Selected %d fonts for upright variants", len(upright_selected))
+
+    # Select fonts for italic variants (only fonts with italic files)
+    italic_selected = _select_fonts(dict_cps, FONTS_DIR, italic=True)
+    log.info("Selected %d fonts for italic variants", len(italic_selected))
+
+    # Build all 4 variants
+    variants = [
+        ("engrish-regular.ttf", upright_selected, 400.0, False),
+        ("engrish-bold.ttf", upright_selected, 700.0, False),
+        ("engrish-italic.ttf", italic_selected, 400.0, True),
+        ("engrish-bold-italic.ttf", italic_selected, 700.0, True),
+    ]
+
+    for filename, selected, wght, is_italic in variants:
+        if not selected:
+            log.warning("No fonts selected for %s, skipping", filename)
+            continue
+        out_path = output_dir / filename
+        log.info("Building %s (wght=%.0f, %d fonts)...", filename, wght, len(selected))
+        _build_merged_font(
+            selected, wght, out_path,
+            italic=is_italic, fonts_dir=FONTS_DIR,
+        )
+
+    log.info("Font generation complete for form '%s'", form)
+
+
+def run_font(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
+    """CLI entry point for the 'font' subcommand."""
+    import sys
+
+    from .epub import _discover_all_dicts
+    from .paths import engrish_form_dir
+
+    if all_dicts:
+        dicts = _discover_all_dicts()
+        if not dicts:
+            print("Error: no existing dictionaries found", file=sys.stderr)
+            return 1
+        log.info("Discovered dictionaries: %s", ", ".join(dicts))
+
+    errors: list[str] = []
+    for form in dicts:
+        form_dir = engrish_form_dir(form)
+        if not form_dir.exists() or not any(form_dir.iterdir()):
+            errors.append(f"Dictionary '{form}' not found at {form_dir}")
+
+    if errors:
+        for err in errors:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    for form in dicts:
+        locales = [c.strip() for c in form.split("+") if c.strip()]
+        form_dir = engrish_form_dir(form)
+        log.info("Generating fonts: %s -> %s", form, form_dir)
+        try:
+            generate_fonts(locales, form_dir, form=form)
+        except Exception as exc:
+            log.error("Font generation failed for '%s': %s", form, exc)
+
     return 0

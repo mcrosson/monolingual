@@ -524,7 +524,7 @@ def test_en_in_all_locales() -> None:
 def test_detect_fonts_locale_code_api(engrish_pipeline: dict[str, Path]) -> None:
     """detect_fonts takes a locale code and resolves wiktionary_section from config."""
     from engrish.paths import get_sqlite_path
-    from engrish.update_fonts import detect_fonts
+    from engrish.font import detect_fonts
 
     db_path = get_sqlite_path()
     for code in ("en", "ja", "ang"):
@@ -537,7 +537,7 @@ def test_detect_fonts_locale_code_api(engrish_pipeline: dict[str, Path]) -> None
 def test_detect_fonts_wiktionary_section_override(engrish_pipeline: dict[str, Path]) -> None:
     """detect_fonts accepts wiktionary_section kwarg for codes not in config."""
     from engrish.paths import get_sqlite_path
-    from engrish.update_fonts import detect_fonts
+    from engrish.font import detect_fonts
 
     db_path = get_sqlite_path()
     # Use a known section heading with a made-up code
@@ -549,7 +549,7 @@ def test_detect_fonts_wiktionary_section_override(engrish_pipeline: dict[str, Pa
 def test_collect_headword_chars_batch(engrish_pipeline: dict[str, Path]) -> None:
     """Batch scan returns chars keyed by locale code for multiple languages."""
     from engrish.paths import get_sqlite_path
-    from engrish.update_fonts import collect_headword_chars_batch
+    from engrish.font import collect_headword_chars_batch
 
     db_path = get_sqlite_path()
     result = collect_headword_chars_batch(["en", "ja"], db_path)
@@ -560,76 +560,166 @@ def test_collect_headword_chars_batch(engrish_pipeline: dict[str, Path]) -> None
 
 
 # ---------------------------------------------------------------------------
-# EPUB font verification
+# Minimized font generation verification
 # ---------------------------------------------------------------------------
 
 
-def test_epub_contains_base_fonts(engrish_epubs: dict[str, Path]) -> None:
-    """Every EPUB must contain all epub_base_fonts."""
-    from engrish.config import EPUB_BASE_FONTS
+@pytest.fixture(scope="session")
+def engrish_fonts(engrish_pipeline: dict[str, Path]) -> dict[str, Path]:
+    """Generate minimized fonts for all test forms. Returns dict of form -> form dir."""
+    from engrish.font import generate_fonts
 
-    for form, epub_path in engrish_epubs.items():
-        with zipfile.ZipFile(epub_path) as zf:
-            font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
-            for stem in EPUB_BASE_FONTS:
-                assert any(stem in f for f in font_files), (
-                    f"EPUB for {form} missing base font {stem}"
-                )
-
-
-def test_epub_contains_cjk_fonts(engrish_epubs: dict[str, Path]) -> None:
-    """Japanese EPUB must contain CJK font files."""
-    epub_path = engrish_epubs["ja"]
-    with zipfile.ZipFile(epub_path) as zf:
-        font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
-        assert any("NotoSansJP" in f for f in font_files), (
-            "Japanese EPUB missing NotoSansJP font"
-        )
+    result: dict[str, Path] = {}
+    for form, (locales, _) in TEST_FORMS.items():
+        form_dir = engrish_pipeline[form]
+        generate_fonts(locales, form_dir, form=form)
+        result[form] = form_dir
+    return result
 
 
-def test_epub_contains_emoji_font(engrish_epubs: dict[str, Path]) -> None:
-    """EPUBs for locales with emoji headwords must contain NotoColorEmoji."""
-    for form in ("en", "ja"):
-        epub_path = engrish_epubs[form]
-        with zipfile.ZipFile(epub_path) as zf:
-            font_files = [n for n in zf.namelist() if n.startswith("OEBPS/fonts/")]
-            assert any("NotoColorEmoji" in f for f in font_files), (
-                f"EPUB for {form} missing NotoColorEmoji font"
-            )
+_FONT_VARIANTS = ["engrish-regular.ttf", "engrish-bold.ttf", "engrish-italic.ttf", "engrish-bold-italic.ttf"]
 
 
-def test_epub_css_font_order_largest_first(engrish_epubs: dict[str, Path]) -> None:
-    """CSS font-family cascade must list fonts largest-first to match greedy set cover."""
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_files_created(engrish_fonts: dict[str, Path], form: str) -> None:
+    """All 4 font variants must exist in the form directory."""
+    form_dir = engrish_fonts[form]
+    for variant in _FONT_VARIANTS:
+        assert (form_dir / variant).exists(), f"Missing font file: {form_dir / variant}"
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_files_valid(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Each font file must open with fontTools and have a non-empty cmap."""
+    from fontTools.ttLib import TTFont
+
+    form_dir = engrish_fonts[form]
+    for variant in _FONT_VARIANTS:
+        fpath = form_dir / variant
+        if not fpath.exists():
+            pytest.skip(f"{variant} not created")
+        font = TTFont(str(fpath))
+        cmap = font.getBestCmap()
+        assert cmap is not None, f"{variant} has no cmap"
+        assert len(cmap) > 0, f"{variant} has empty cmap"
+        font.close()
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_regular_covers_dictionary(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Regular font covers all .df codepoints that on-disk Noto fonts cover."""
+    from fontTools.ttLib import TTFont
+
     from engrish.config import FONTS_DIR
+    from engrish.font import collect_codepoints
 
-    for form, epub_path in engrish_epubs.items():
-        with zipfile.ZipFile(epub_path) as zf:
-            css = zf.read("OEBPS/styles.css").decode("utf-8")
+    locales, _ = TEST_FORMS[form]
+    form_dir = engrish_fonts[form]
+    regular = form_dir / "engrish-regular.ttf"
+    if not regular.exists():
+        pytest.skip("regular font not created")
 
-        # Extract font stems from the font-family line
-        for line in css.splitlines():
-            if "font-family:" in line:
-                # Parse 'FontA', 'FontB', ... , serif
-                stems = [s.strip().strip("'") for s in line.split(":", 1)[1].split(",")]
-                stems = [s for s in stems if s not in ("serif", "")]
-                break
-        else:
-            raise AssertionError(f"No font-family line in CSS for {form}")
+    dict_cps = collect_codepoints(locales)
 
-        # Look up file sizes for each stem
-        sizes = []
-        for stem in stems:
-            matches = [f for f in FONTS_DIR.glob("*") if f.suffix in (".ttf", ".otf")
-                       and f.stem.split("[")[0].split("-")[0] == stem]
-            assert matches, f"Font {stem} in CSS but not in {FONTS_DIR}"
-            sizes.append((stem, matches[0].stat().st_size))
+    # Collect union of all on-disk Noto font cmaps
+    noto_covered: set[int] = set()
+    for fpath in FONTS_DIR.glob("*"):
+        if fpath.suffix in (".ttf", ".otf") and not fpath.name.startswith("engrish"):
+            f = TTFont(str(fpath))
+            cm = f.getBestCmap()
+            if cm:
+                noto_covered.update(cm.keys())
+            f.close()
 
-        # Verify descending order
-        for i in range(len(sizes) - 1):
-            assert sizes[i][1] >= sizes[i + 1][1], (
-                f"EPUB {form}: font {sizes[i][0]} ({sizes[i][1]:,}B) is smaller than "
-                f"next font {sizes[i+1][0]} ({sizes[i+1][1]:,}B) — cascade must be largest-first"
-            )
+    # Codepoints the regular font should cover = dict cps that any Noto font covers
+    expected = dict_cps & noto_covered
+
+    font = TTFont(str(regular))
+    regular_cps = set((font.getBestCmap() or {}).keys())
+    font.close()
+
+    missing = expected - regular_cps
+    assert not missing, (
+        f"Regular font for {form} missing {len(missing)} codepoints that Noto fonts cover: "
+        f"{sorted(list(missing))[:20]}..."
+    )
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_bold_matches_regular_coverage(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Bold font cmap must match regular font cmap."""
+    from fontTools.ttLib import TTFont
+
+    form_dir = engrish_fonts[form]
+    regular = form_dir / "engrish-regular.ttf"
+    bold = form_dir / "engrish-bold.ttf"
+    if not regular.exists() or not bold.exists():
+        pytest.skip("fonts not created")
+
+    r = TTFont(str(regular)); r_cps = set((r.getBestCmap() or {}).keys()); r.close()
+    b = TTFont(str(bold)); b_cps = set((b.getBestCmap() or {}).keys()); b.close()
+
+    assert r_cps == b_cps, (
+        f"Bold/regular cmap mismatch for {form}: "
+        f"{len(r_cps - b_cps)} in regular only, {len(b_cps - r_cps)} in bold only"
+    )
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_italic_subset_of_regular(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Italic font cmap must be a subset of regular font cmap."""
+    from fontTools.ttLib import TTFont
+
+    form_dir = engrish_fonts[form]
+    regular = form_dir / "engrish-regular.ttf"
+    italic = form_dir / "engrish-italic.ttf"
+    if not regular.exists() or not italic.exists():
+        pytest.skip("fonts not created")
+
+    r = TTFont(str(regular)); r_cps = set((r.getBestCmap() or {}).keys()); r.close()
+    i = TTFont(str(italic)); i_cps = set((i.getBestCmap() or {}).keys()); i.close()
+
+    extra = i_cps - r_cps
+    assert not extra, (
+        f"Italic font for {form} has {len(extra)} codepoints not in regular: "
+        f"{sorted(list(extra))[:20]}..."
+    )
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_bold_italic_matches_italic_coverage(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Bold-italic font cmap must match italic font cmap."""
+    from fontTools.ttLib import TTFont
+
+    form_dir = engrish_fonts[form]
+    italic = form_dir / "engrish-italic.ttf"
+    bold_italic = form_dir / "engrish-bold-italic.ttf"
+    if not italic.exists() or not bold_italic.exists():
+        pytest.skip("fonts not created")
+
+    i = TTFont(str(italic)); i_cps = set((i.getBestCmap() or {}).keys()); i.close()
+    bi = TTFont(str(bold_italic)); bi_cps = set((bi.getBestCmap() or {}).keys()); bi.close()
+
+    assert i_cps == bi_cps, (
+        f"Bold-italic/italic cmap mismatch for {form}: "
+        f"{len(i_cps - bi_cps)} in italic only, {len(bi_cps - i_cps)} in bold-italic only"
+    )
+
+
+@pytest.mark.parametrize("form", FORM_IDS)
+def test_font_gsub_gpos_present(engrish_fonts: dict[str, Path], form: str) -> None:
+    """Regular and bold fonts must have GSUB and GPOS tables."""
+    from fontTools.ttLib import TTFont
+
+    form_dir = engrish_fonts[form]
+    for variant in ["engrish-regular.ttf", "engrish-bold.ttf"]:
+        fpath = form_dir / variant
+        if not fpath.exists():
+            pytest.skip(f"{variant} not created")
+        font = TTFont(str(fpath))
+        assert "GSUB" in font, f"{variant} for {form} missing GSUB table"
+        assert "GPOS" in font, f"{variant} for {form} missing GPOS table"
+        font.close()
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +730,7 @@ def test_epub_css_font_order_largest_first(engrish_epubs: dict[str, Path]) -> No
 def test_update_fonts_downloads_missing(engrish_pipeline: dict[str, Path]) -> None:
     """Temporarily remove a font, run update-fonts, verify it's re-downloaded."""
     from engrish.config import FONTS_DIR
-    from engrish.update_fonts import _find_font_file, run as run_update_fonts
+    from engrish.font import _find_font_file, run_update as run_update_fonts
 
     stem = "NotoSansRunic"
     font_file = _find_font_file(stem, FONTS_DIR)

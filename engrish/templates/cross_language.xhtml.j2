@@ -1,6 +1,7 @@
 <h1>Shared</h1>
 <p>Words shared between all source languages in this dictionary.</p>
 
+{% if entries %}
 {% for entry in entries %}
 <h2>{{ entry.headword }}</h2>
 {% for locale_entry in entry.locales %}
@@ -10,3 +11,6 @@
 {% endwith %}
 {% endfor %}
 {% endfor %}
+{% else %}
+<p>No words are shared across all locales in this dictionary.</p>
+{% endif %}

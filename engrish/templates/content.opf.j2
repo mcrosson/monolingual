@@ -8,9 +8,6 @@
   </metadata>
   <manifest>
     <item id="stylesheet" href="styles.css" media-type="text/css"/>
-    {% for stem, filename in fonts %}
-    <item id="font-{{ stem }}" href="fonts/{{ filename }}" media-type="{{ 'font/otf' if filename.endswith('.otf') else 'font/ttf' }}"/>
-    {% endfor %}
     {% for ch in chapters %}
     <item id="{{ ch.id }}" href="{{ ch.filename }}" media-type="application/xhtml+xml"/>
     {% endfor %}

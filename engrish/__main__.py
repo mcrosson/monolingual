@@ -93,6 +93,11 @@ def main() -> int:
         action="store_true",
         help="Generate a sampler EPUB for each dictionary after building it",
     )
+    gen_parser.add_argument(
+        "--font",
+        action="store_true",
+        help="Generate minimized fonts for each dictionary after building it",
+    )
 
     epub_parser = subparsers.add_parser("epub", help="Generate sampler EPUB for existing dictionaries")
     _add_all_or_items(
@@ -101,6 +106,15 @@ def main() -> int:
         metavar="FORM",
         help_item="Dictionary form to generate EPUB for (e.g. ang+en). May be specified multiple times.",
         help_all="Generate EPUBs for all existing dictionaries",
+    )
+
+    font_parser = subparsers.add_parser("font", help="Generate minimized fonts for existing dictionaries")
+    _add_all_or_items(
+        font_parser,
+        flag="dict",
+        metavar="FORM",
+        help_item="Dictionary form to generate fonts for (e.g. ang+en). May be specified multiple times.",
+        help_all="Generate fonts for all existing dictionaries",
     )
 
     subparsers.add_parser(
@@ -185,6 +199,16 @@ def main() -> int:
                 log.info("Generating sampler EPUB: %s", epub_path)
                 generate_epub(locales, epub_path, form=form)
 
+        # Phase 4: optional font generation
+        if args.font:
+            from .font import generate_fonts
+            from .paths import engrish_form_dir as _efdir
+
+            for form, locales in forms:
+                form_dir = _efdir(form)
+                log.info("Generating minimized fonts: %s", form_dir)
+                generate_fonts(locales, form_dir, form=form)
+
     elif args.command == "prepare":
         from wikidict import download
 
@@ -205,10 +229,15 @@ def main() -> int:
 
         return run()
 
-    elif args.command == "update-fonts":
-        from .update_fonts import run as run_update_fonts
+    elif args.command == "font":
+        from .font import run_font
 
-        return run_update_fonts()
+        return run_font(args.dict, all_dicts=args.all)
+
+    elif args.command == "update-fonts":
+        from .font import run_update
+
+        return run_update()
 
     return 0
 
