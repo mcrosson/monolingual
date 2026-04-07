@@ -945,6 +945,7 @@ def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None
             italic=is_italic, fonts_dir=FONTS_DIR,
         )
 
+    _cached_cmaps.clear()
     log.info("Font generation complete for form '%s'", form)
 
 
@@ -973,6 +974,8 @@ def run_font(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
             print(f"Error: {err}", file=sys.stderr)
         return 1
 
+    import gc
+
     for form in dicts:
         locales = [c.strip() for c in form.split("+") if c.strip()]
         form_dir = engrish_form_dir(form)
@@ -981,5 +984,6 @@ def run_font(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
             generate_fonts(locales, form_dir, form=form)
         except Exception as exc:
             log.error("Font generation failed for '%s': %s", form, exc)
+        gc.collect()
 
     return 0

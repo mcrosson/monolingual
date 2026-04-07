@@ -178,6 +178,9 @@ def convert_df_to_stardict(df_src: Path, out_folder: Path, title: str, date: str
     finally:
         gc.collect = original_gc_collect  # type: ignore[assignment]
 
+    del glos
+    gc.collect()
+
     rename_stardict_files(out_folder, dict_name)
     decompress_dict_dz(out_folder)
     generate_oft_files(out_folder)

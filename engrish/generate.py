@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import shutil
 
@@ -38,6 +39,8 @@ def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> N
                 continue
 
             write_merged_df(merged, merged_df)
+            del merged
+
             title = f"Engrish: {form}" + (" (no etym)" if noetym else "")
             convert_df_to_stardict(merged_df, out_folder, title, date, name)
             patch_ifo(out_folder, name, ifo_fields(form, date, name))
@@ -51,6 +54,8 @@ def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> N
                 for fname, data in locale_res.items():
                     (res_dir / fname).write_bytes(data)
                 log.info("Merged %d res/ files into %s/res/", len(locale_res), out_folder.name)
+            del locale_res
+            gc.collect()
     finally:
         shutil.rmtree(tmp_base, ignore_errors=True)
 

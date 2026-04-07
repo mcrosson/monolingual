@@ -620,6 +620,8 @@ def run(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
             print(f"Error: {err}", file=sys.stderr)
         return 1
 
+    import gc
+
     for form in dicts:
         locales = [c.strip() for c in form.split("+") if c.strip()]
         date = get_snapshot_date(locales)
@@ -631,5 +633,6 @@ def run(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
             log.info("EPUB: %s", epub_path)
         except FileNotFoundError as exc:
             log.error("EPUB generation failed for '%s': %s", form, exc)
+        gc.collect()
 
     return 0

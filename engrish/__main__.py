@@ -184,8 +184,11 @@ def main() -> int:
         )
 
         # Phase 2: generate engrish output per form
+        import gc
+
         for form, locales in forms:
             process_form(form, locales)
+            gc.collect()
 
         # Phase 3: optional EPUB generation
         if args.epub:
@@ -198,6 +201,7 @@ def main() -> int:
                 epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
                 log.info("Generating sampler EPUB: %s", epub_path)
                 generate_epub(locales, epub_path, form=form)
+                gc.collect()
 
         # Phase 4: optional font generation
         if args.font:
@@ -208,6 +212,7 @@ def main() -> int:
                 form_dir = _efdir(form)
                 log.info("Generating minimized fonts: %s", form_dir)
                 generate_fonts(locales, form_dir, form=form)
+                gc.collect()
 
     elif args.command == "prepare":
         from wikidict import download

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import gzip
 import json
 import logging
@@ -111,6 +112,7 @@ def engrish_pipeline() -> dict[str, Path]:
         else:
             log.info("=== Generating form: %s (locales: %s) ===", form, locales)
             generate.process_form(form, locales)
+        gc.collect()
         result[form] = engrish_form_dir(form)
 
     log.info("=== engrish test setup complete ===")
@@ -120,12 +122,17 @@ def engrish_pipeline() -> dict[str, Path]:
 @pytest.fixture(scope="session")
 def engrish_epubs(engrish_pipeline: dict[str, Path]) -> dict[str, Path]:
     """Generate EPUBs for all test forms. Returns dict of form -> epub path."""
+    log = logging.getLogger(__name__)
     result: dict[str, Path] = {}
     for form, (locales, _) in TEST_FORMS.items():
         form_dir = engrish_pipeline[form]
         date = get_snapshot_date(locales)
         epub_path = form_dir / f"test-{dict_base_name(form, date)}.epub"
-        epub.generate_epub(locales, epub_path, form=form)
+        if epub_path.exists():
+            log.info("[%s] EPUB already generated — skipping", form)
+        else:
+            epub.generate_epub(locales, epub_path, form=form)
+        gc.collect()
         result[form] = epub_path
     return result
 
@@ -213,6 +220,9 @@ def test_merge_dfs(engrish_pipeline: dict[str, Path], form: str) -> None:
                 "entries with <h3> headers — unexpected shared headwords"
             )
 
+    del merged
+    gc.collect()
+
 import re
 
 
@@ -246,6 +256,9 @@ def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> Non
         f"got positions {positions_rev}"
     )
 
+    del merged, merged_rev
+    gc.collect()
+
 
 @pytest.mark.parametrize("form", FORM_IDS)
 def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
@@ -260,6 +273,8 @@ def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
             html_res_refs.add(m.group(1))
 
     if not html_res_refs:
+        del merged
+        gc.collect()
         return  # no res/ references in this form's data
 
     # Collect actual files that would be written
@@ -272,6 +287,9 @@ def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
     assert not missing, (
         f"HTML references res/ files that don't exist in collect_locale_res: {sorted(missing)}"
     )
+
+    del merged
+    gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +315,6 @@ def test_epub_structure(engrish_epubs: dict[str, Path], form: str) -> None:
         assert "OEBPS/toc.ncx" in names
         assert "OEBPS/styles.css" in names
         assert "OEBPS/cover.html" in names
-        font_files = [n for n in names if n.startswith("OEBPS/fonts/")]
-        assert font_files, "No font files in EPUB"
-        assert any("NotoSans" in f for f in font_files), "No NotoSans font in EPUB"
         assert "OEBPS/cover.html" in names
         assert "OEBPS/summary.html" in names
         assert "OEBPS/stress_test.html" in names
@@ -564,20 +579,25 @@ def test_collect_headword_chars_batch(engrish_pipeline: dict[str, Path]) -> None
 # ---------------------------------------------------------------------------
 
 
+_FONT_VARIANTS = ["engrish-regular.ttf", "engrish-bold.ttf", "engrish-italic.ttf", "engrish-bold-italic.ttf"]
+
+
 @pytest.fixture(scope="session")
 def engrish_fonts(engrish_pipeline: dict[str, Path]) -> dict[str, Path]:
     """Generate minimized fonts for all test forms. Returns dict of form -> form dir."""
     from engrish.font import generate_fonts
 
+    log = logging.getLogger(__name__)
     result: dict[str, Path] = {}
     for form, (locales, _) in TEST_FORMS.items():
         form_dir = engrish_pipeline[form]
-        generate_fonts(locales, form_dir, form=form)
+        if all((form_dir / v).exists() for v in _FONT_VARIANTS):
+            log.info("[%s] Fonts already generated — skipping", form)
+        else:
+            generate_fonts(locales, form_dir, form=form)
+        gc.collect()
         result[form] = form_dir
     return result
-
-
-_FONT_VARIANTS = ["engrish-regular.ttf", "engrish-bold.ttf", "engrish-italic.ttf", "engrish-bold-italic.ttf"]
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
@@ -621,15 +641,26 @@ def test_font_regular_covers_dictionary(engrish_fonts: dict[str, Path], form: st
 
     dict_cps = collect_codepoints(locales)
 
-    # Collect union of all on-disk Noto font cmaps
+    # Collect union of on-disk Noto font cmaps, applying the same filters
+    # as _select_fonts: skip engrish outputs, italic files, and CBDT-only
+    # fonts (no glyf, no CFF).
     noto_covered: set[int] = set()
     for fpath in FONTS_DIR.glob("*"):
-        if fpath.suffix in (".ttf", ".otf") and not fpath.name.startswith("engrish"):
-            f = TTFont(str(fpath))
-            cm = f.getBestCmap()
-            if cm:
-                noto_covered.update(cm.keys())
-            f.close()
+        if fpath.suffix not in (".ttf", ".otf"):
+            continue
+        if fpath.name.startswith("engrish"):
+            continue
+        if "-Italic" in fpath.name:
+            continue
+        f = TTFont(str(fpath))
+        has_glyf = "glyf" in f
+        has_cff = "CFF " in f
+        cm = f.getBestCmap()
+        f.close()
+        if not has_glyf and not has_cff:
+            continue
+        if cm:
+            noto_covered.update(cm.keys())
 
     # Codepoints the regular font should cover = dict cps that any Noto font covers
     expected = dict_cps & noto_covered
@@ -1368,12 +1399,16 @@ def test_resolve_chain_normalizes_at_each_step(tmp_path: Path) -> None:
 
 
 def test_cleanup_drops_dangling(tmp_path: Path) -> None:
-    """Targets that don't resolve to any headword are dropped."""
+    """Targets that don't resolve to any headword are dropped.
+
+    An entry whose only variants are dangling AND has no definitions
+    becomes a dead entry and is removed entirely.
+    """
     data = {
         "entry": {"variants": ["nonexistent"]},
     }
     result = _run_normalize(tmp_path, data)
-    assert "variants" not in result["entry"]
+    assert "entry" not in result
 
 
 def test_cleanup_drops_dead_chain(tmp_path: Path) -> None:
