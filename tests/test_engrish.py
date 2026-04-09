@@ -462,8 +462,8 @@ def test_add_language(engrish_pipeline: dict[str, Path], tmp_path: Path) -> None
     tmp_config.write_text("{}", encoding="utf-8")
 
     # Patch the config path
-    original = add_lang._ENGRISH_JSON
-    add_lang._ENGRISH_JSON = tmp_config
+    original = add_lang.ENGRISH_JSON_PATH
+    add_lang.ENGRISH_JSON_PATH = tmp_config
     try:
         # Add French
         result = add_lang.run(["fr"], all_langs=False)
@@ -491,7 +491,7 @@ def test_add_language(engrish_pipeline: dict[str, Path], tmp_path: Path) -> None
         assert cfg["languages"]["en"]["wiktionary_section"] == "english"
         assert "fonts" in cfg["languages"]["en"]
     finally:
-        add_lang._ENGRISH_JSON = original
+        add_lang.ENGRISH_JSON_PATH = original
 
 
 def test_en_retains_native_head_sections() -> None:
