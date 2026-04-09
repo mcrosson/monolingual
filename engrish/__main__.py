@@ -173,7 +173,8 @@ def main() -> int:
         all_locales: list[str] = []
         for _, locales in forms:
             all_locales.extend(locales)
-        run_wikidict(all_locales)
+        # Deduplicate while preserving order
+        run_wikidict(list(dict.fromkeys(all_locales)))
 
         # Restore console logging (wikidict's setup_logging redirects to file)
         logging.basicConfig(
@@ -206,10 +207,10 @@ def main() -> int:
         # Phase 4: optional font generation
         if args.font:
             from .font import generate_fonts
-            from .paths import engrish_form_dir as _efdir
+            from .paths import engrish_form_dir as form_dir_fn
 
             for form, locales in forms:
-                form_dir = _efdir(form)
+                form_dir = form_dir_fn(form)
                 log.info("Generating minimized fonts: %s", form_dir)
                 generate_fonts(locales, form_dir, form=form)
                 gc.collect()
@@ -217,7 +218,7 @@ def main() -> int:
     elif args.command == "prepare":
         from wikidict import download
 
-        download.main(ALL_LOCALES[0])
+        download.main("en")  # All engrish locales use EN Wiktionary
 
     elif args.command == "epub":
         from .epub import run as run_epub

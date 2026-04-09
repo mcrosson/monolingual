@@ -5,24 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from pathlib import Path
 
-from .paths import get_sqlite_path
+from .config import ENGRISH_JSON_PATH
 from .stats import load_language_codes
 
 log = logging.getLogger(__name__)
 
-_ENGRISH_JSON = Path(__file__).parent / "engrish.json"
-
 
 def _load_config() -> dict:
-    if _ENGRISH_JSON.exists():
-        return json.loads(_ENGRISH_JSON.read_text(encoding="utf-8"))
+    if ENGRISH_JSON_PATH.exists():
+        return json.loads(ENGRISH_JSON_PATH.read_text(encoding="utf-8"))
     return {}
 
 
 def _save_config(cfg: dict) -> None:
-    _ENGRISH_JSON.write_text(
+    ENGRISH_JSON_PATH.write_text(
         json.dumps(cfg, indent=4, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
@@ -30,13 +27,9 @@ def _save_config(cfg: dict) -> None:
 
 def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
     """Resolve language codes from the dump and add them to engrish.json."""
-    from wikidict import download, parse
+    from .pipeline import ensure_wikidict_parsed
 
-    log.info("Ensuring EN Wiktionary dump is downloaded and parsed...")
-    download.main("en")
-    parse.main("en")
-
-    db_path = get_sqlite_path()
+    db_path = ensure_wikidict_parsed()
     name_to_code = load_language_codes(db_path)
     code_to_name = {code: name for name, code in name_to_code.items()}
 
@@ -87,6 +80,6 @@ def run(langs: list[str] | None, *, all_langs: bool = False) -> int:
         log.info("Added: %s (%s) — fonts: %s", code, name, ", ".join(fonts))
 
     _save_config(cfg)
-    log.info("Updated %s — %d language(s) added", _ENGRISH_JSON, len(to_add))
+    log.info("Updated %s — %d language(s) added", ENGRISH_JSON_PATH, len(to_add))
 
     return 0

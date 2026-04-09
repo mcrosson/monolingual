@@ -2,45 +2,54 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import re
 import shutil
 import unicodedata
+from collections import deque
 from pathlib import Path
 
 from .paths import output_dir, parse_source_dir, render_source_dir
 
 log = logging.getLogger(__name__)
 
+# Maximum depth for variant chain resolution (prevents infinite loops)
+_MAX_CHAIN_DEPTH = 50
+
 
 # ---------------------------------------------------------------------------
 # Normalization helpers — each returns resolved headword(s) or None
 # ---------------------------------------------------------------------------
 
-def _try_strip_combining(target: str, headwords: set[str]) -> str | None:
-    """Try stripping combining characters from target to find a headword match.
+def _try_strip_combining(
+    target: str, headwords: set[str], base_map: dict[str, list[str]]
+) -> list[str]:
+    """Find headwords that match the target with a subset of its combining marks removed.
 
-    Decomposes to NFD, identifies every distinct combining character present,
-    then tries removing progressively larger subsets — single marks first, then
-    pairs, triples, etc. — until a candidate lands on a headword.  Trying
-    smallest subsets first preserves as much of the original spelling as possible
-    (e.g. keeping Greek accents while stripping only vowel-length annotations).
+    Instead of enumerating 2^N subsets of marks to strip from the target (exponential),
+    this inverts the search: use base_map to find headwords that share the target's base
+    form and have a proper subset of the target's marks.  O(M) where M is the number of
+    headwords that share the same base form — typically very small (1–5).
+
+    Returns all matching headwords (may be more than one if several headwords differ only
+    in which subset of marks they preserve).
     """
-    from itertools import combinations
-
     nfd = unicodedata.normalize("NFD", target)
-    marks = sorted({c for c in nfd if unicodedata.combining(c)})
-    if not marks:
-        return None
-
-    for r in range(1, len(marks) + 1):
-        for subset in combinations(marks, r):
-            drop = set(subset)
-            candidate = unicodedata.normalize("NFC", "".join(c for c in nfd if c not in drop))
-            if candidate != target and candidate in headwords:
-                return candidate
-
-    return None
+    target_marks = frozenset(c for c in nfd if unicodedata.combining(c))
+    if not target_marks:
+        return []
+    base = unicodedata.normalize("NFC", "".join(c for c in nfd if not unicodedata.combining(c)))
+    results: list[str] = []
+    for hw in base_map.get(base, []):
+        if hw == target or hw not in headwords:
+            continue
+        hw_nfd = unicodedata.normalize("NFD", hw)
+        hw_marks = frozenset(c for c in hw_nfd if unicodedata.combining(c))
+        if hw_marks < target_marks:  # strict subset — hw has fewer distinct marks
+            results.append(hw)
+    return results
 
 
 def _try_strip_anchor(target: str, headwords: set[str]) -> str | None:
@@ -119,25 +128,37 @@ def _build_base_form_map(headwords: set[str]) -> dict[str, list[str]]:
 
 def _try_bidi_normalize(
     target: str, headwords: set[str], base_map: dict[str, list[str]]
-) -> str | None:
-    """Bidirectional common-base matching — strip both sides, match."""
+) -> list[str]:
+    """Bidirectional common-base matching — strip both sides, return ALL matching headwords.
+
+    Returns every headword that shares the same stripped base form as the target.
+    Returning all candidates avoids the arbitrary [0] choice when multiple headwords
+    decompose to the same base (e.g. Greek ψιλοί vs ψιλοὶ both stripping to ψιλοι).
+    """
+    results: list[str] = []
+
+    def _add_all(candidates: list[str]) -> None:
+        for hw in candidates:
+            if hw != target and hw in headwords and hw not in results:
+                results.append(hw)
+
     nfd = unicodedata.normalize("NFD", target)
     base = unicodedata.normalize(
         "NFC", "".join(c for c in nfd if not unicodedata.combining(c))
     )
     if base in base_map:
-        return base_map[base][0]
+        _add_all(base_map[base])
     nfkc = unicodedata.normalize("NFKC", target)
     nfkc_nfd = unicodedata.normalize("NFD", nfkc)
     nfkc_base = unicodedata.normalize(
         "NFC", "".join(c for c in nfkc_nfd if not unicodedata.combining(c))
     )
     if nfkc_base != base and nfkc_base in base_map:
-        return base_map[nfkc_base][0]
+        _add_all(base_map[nfkc_base])
     low_base = base.lower()
     if low_base != base and low_base in base_map:
-        return base_map[low_base][0]
-    return None
+        _add_all(base_map[low_base])
+    return results
 
 
 def _try_punct_normalize(target: str, headwords: set[str]) -> list[str]:
@@ -256,9 +277,9 @@ def _try_all_normalizations(
     _add(_try_strip_anchor(target, headwords))
     _add(_try_normalize_zwnj(target, headwords))
     _add(_try_nfkc(target, headwords))
-    _add(_try_strip_combining(target, headwords))
+    _add_many(_try_strip_combining(target, headwords, base_map))
     _add(_try_case_normalize(target, headwords))
-    _add(_try_bidi_normalize(target, headwords, base_map))
+    _add_many(_try_bidi_normalize(target, headwords, base_map))
     _add_many(_try_punct_normalize(target, headwords))
     _add_many(_try_spacing_normalize(target, headwords))
     _add(_try_article_normalize(target, headwords))
@@ -283,9 +304,9 @@ def _resolve_variant_chain(
     directly match a headword.
     """
     seen: set[str] = set()
-    queue = [target]
+    queue: deque[str] = deque([target])
     while queue:
-        current = queue.pop(0)
+        current = queue.popleft()
         if current in seen:
             continue
         seen.add(current)
@@ -303,7 +324,7 @@ def _resolve_variant_chain(
         for t in entry.get("variants", []):
             if t not in seen:
                 queue.append(t)
-        if len(seen) > 50:
+        if len(seen) > _MAX_CHAIN_DEPTH:
             break
     return None
 
@@ -399,8 +420,12 @@ def normalize_variant_targets(locale: str) -> None:
                             _record_stat(cat, word, target, result[0])
                             categorized = True
                             break
-                    elif cat == "bidi":
-                        continue  # handled separately below
+                    elif cat == "combining":
+                        result = _try_strip_combining(target, headwords, base_map)
+                        if result:
+                            _record_stat(cat, word, target, result[0])
+                            categorized = True
+                            break
                     else:
                         result = normalizer(target, headwords)
                         if result:
@@ -410,7 +435,7 @@ def normalize_variant_targets(locale: str) -> None:
                 if not categorized:
                     result = _try_bidi_normalize(target, headwords, base_map)
                     if result:
-                        _record_stat("bidi", word, target, result)
+                        _record_stat("bidi", word, target, result[0])
             else:
                 _record_stat("dangling", word, target, "\u2014")
         entry["variants"] = new_variants
@@ -484,7 +509,8 @@ def normalize_variant_targets(locale: str) -> None:
             shutil.rmtree(out)
             log.info("[%s] Cleared stale convert output", locale)
 
-    # Write normalization stats sidecar for epub cleanup chapter
+    # Write normalization stats sidecar for epub cleanup chapter.
+    # Always written (even when empty) so stale files from prior runs are overwritten.
     stats_data = {}
     for cat in stats_counts:
         if stats_counts[cat] > 0:
@@ -492,11 +518,61 @@ def normalize_variant_targets(locale: str) -> None:
                 "count": stats_counts[cat],
                 "examples": stats_examples[cat],
             }
+    stats_path = render_dir / "normalize-stats.json"
+    stats_path.write_text(json.dumps(stats_data, ensure_ascii=False, indent=2), "utf-8")
     if stats_data:
-        stats_path = render_dir / "normalize-stats.json"
-        stats_path.write_text(json.dumps(stats_data, ensure_ascii=False, indent=2), "utf-8")
         log.info("[%s] Wrote normalization stats: %s", locale, stats_path)
 
+    # Collect locale metadata for streaming merge/epub
+    # IPA pattern for pronunciation detection in raw JSON definitions
+    _ipa_pattern = re.compile(r"[/\\]([^/\\<>]{1,50})[/\\]")
+    _ipa_chars = re.compile(r"[\u0250-\u02FF\u0300-\u036F\u00C0-\u024F]")
+
+    entry_sizes: list[tuple[str, int]] = []
+    words_with_alternates: list[str] = []
+    words_with_pronunciation: list[str] = []
+    total_synonyms = 0
+
+    for word, entry in data.items():
+        # Estimate size from JSON-serialized definitions (rough approximation of HTML size)
+        defs = entry.get("definitions", [])
+        size_estimate = len(json.dumps(defs, ensure_ascii=False)) if defs else 0
+        entry_sizes.append((word, size_estimate))
+
+        # Track words with alternates (variants)
+        variants = entry.get("variants", [])
+        total_synonyms += len(variants)
+        if variants:
+            words_with_alternates.append(word)
+
+        # Detect pronunciation in definitions (search for IPA patterns)
+        defs_text = json.dumps(defs, ensure_ascii=False) if defs else ""
+        pron_matches = _ipa_pattern.findall(defs_text)
+        if any(_ipa_chars.search(p) for p in pron_matches):
+            words_with_pronunciation.append(word)
+
+    # Sort and prepare metadata
+    sorted_headwords = sorted(data.keys())
+    entry_sizes.sort(key=lambda x: x[1], reverse=True)
+
+    locale_meta = {
+        "entry_count": len(data),
+        "total_synonyms": total_synonyms,
+        "headwords": sorted_headwords,
+        "largest_entries": [
+            {"word": w, "size_bytes": s} for w, s in entry_sizes[:20]
+        ],
+        "words_with_alternates": sorted(words_with_alternates),
+        "words_with_pronunciation": sorted(words_with_pronunciation),
+    }
+
+    meta_path = render_dir / "locale-meta.json"
+    meta_path.write_text(json.dumps(locale_meta, ensure_ascii=False), "utf-8")
+    log.info("[%s] Wrote locale metadata: %s (%d entries)", locale, meta_path, len(data))
+
+    # Explicit cleanup to free memory after processing large locale data
+    del data, headwords, base_map, headwords_with_defs, locale_meta, sorted_headwords
+    gc.collect()
 
 
 def delete_cache(locales: list[str]) -> None:
@@ -525,22 +601,40 @@ def delete_cache(locales: list[str]) -> None:
         for f in rdir.glob("data-*.json"):
             log.info("Removing %s", f)
             f.unlink(missing_ok=True)
-        odir = rdir / "output"
+        odir = output_dir(locale)
         if odir.exists():
             log.info("Removing %s", odir)
             shutil.rmtree(odir)
 
 
+def ensure_wikidict_parsed() -> Path:
+    """Ensure EN Wiktionary dump is downloaded and parsed. Returns DB path.
+
+    Used by stats and add-language commands that need the parsed dump
+    but don't need to run render/convert.
+    """
+    from wikidict import download, parse
+
+    from .paths import get_sqlite_path, parse_source_dir
+
+    src_dir = parse_source_dir()
+    has_sqlite = bool(list(src_dir.glob("pages-*.sqlite")))
+    if not has_sqlite:
+        log.info("Ensuring EN Wiktionary dump is downloaded and parsed...")
+        download.main("en")
+        parse.main("en")
+    return get_sqlite_path()
+
+
 def run_wikidict(locales: list[str]) -> None:
     """Run the full wikidict pipeline for all locales.
 
-    Groups locales by source dump so download+parse happens once per dump
-    (parse.main deletes the XML after parsing, so all locales sharing a
-    dump must be parsed before the XML is removed).  Then render+convert
-    each locale individually.
+    All engrish locales use the EN Wiktionary as their source dump.
+    Download+parse runs once if the SQLite DB is not already present.
+    Then render+convert runs per locale individually.
     """
     from wikidict import convert as wikidict_convert
-    from wikidict import download, parse, render, utils
+    from wikidict import download, parse, render
 
     # Deduplicate while preserving order
     seen: set[str] = set()
@@ -550,29 +644,19 @@ def run_wikidict(locales: list[str]) -> None:
             seen.add(loc)
             unique.append(loc)
 
-    # Group by source dump
-    by_source: dict[str, list[str]] = {}
-    for locale in unique:
-        src, _ = utils.guess_locales(locale, use_log=False)
-        by_source.setdefault(src, []).append(locale)
-
-    # Phase 1: download + parse (grouped by source dump)
-    # parse.main deletes the XML after parsing, so skip download entirely
-    # if the .sqlite already exists — otherwise we waste ~3 min decompressing
-    # a 12GB XML that won't be used.
-    for src, group in by_source.items():
-        src_dir = parse_source_dir()
-        has_sqlite = bool(list(src_dir.glob("pages-*.sqlite")))
-
-        if not has_sqlite:
-            log.info("=== [%s] download ===", group[0])
-            download.main(group[0])
-
-            for locale in group:
-                log.info("=== [%s] parse ===", locale)
-                parse.main(locale)
-        else:
-            log.info("[%s] Already parsed — skipping download+parse", src)
+    # Phase 1: download + parse (once, shared across all locales)
+    # Skip download if the SQLite DB already exists — avoids decompressing
+    # the full XML dump unnecessarily.
+    src_dir = parse_source_dir()
+    has_sqlite = bool(list(src_dir.glob("pages-*.sqlite")))
+    if not has_sqlite:
+        log.info("=== download ===")
+        download.main(unique[0])
+        for locale in unique:
+            log.info("=== [%s] parse ===", locale)
+            parse.main(locale)
+    else:
+        log.info("Already parsed — skipping download+parse")
 
     # Phase 2: render + convert (per locale)
     for locale in unique:

@@ -13,7 +13,6 @@ import shutil
 import threading
 from collections import defaultdict
 from contextlib import suppress
-from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -239,7 +238,7 @@ class BaseFormat:
         if (chosen_word := words[word]).is_variant and not chosen_word.definitions and not for_kobo:
             return
 
-        details = deepcopy(chosen_word)
+        details = chosen_word  # Read-only access — no deepcopy needed
         current_words = {word: details}
         lang_src = self.effective_lang_src()
         is_japanese = lang_src == "ja"
@@ -263,7 +262,7 @@ class BaseFormat:
                 continue
 
             all_variants = self.variants
-            if variants := deepcopy(all_variants.get(current_word, set())):
+            if variants := set(all_variants.get(current_word, ())):  # Shallow copy of set
                 # Add variants of empty* variant, only 1 redirection:
                 #   [ES] gastada* -> gastado* -> gastar --> (gastada, gastado) -> gastar
                 # Note: the process works backward: from gastar up to gastado up to gastada.
@@ -477,8 +476,10 @@ class DictFileFormat(BaseFormat):
     def process(self) -> None:
         file = self.dictionary_file(self.output_file)
         words = self.words
-        data = "".join(formatted_word for word in words for formatted_word in self.handle_word(word, words))
-        file.write_text(data, encoding="utf-8")
+        with file.open("w", encoding="utf-8") as fh:
+            for word in words:
+                for formatted_word in self.handle_word(word, words):
+                    fh.write(formatted_word)
 
         self.summary(file)
 

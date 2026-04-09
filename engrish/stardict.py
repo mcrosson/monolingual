@@ -28,7 +28,11 @@ def generate_oft(source_file: Path, bytes_after_null: int) -> None:
     pos = 0
     count = 0
     while pos < len(data):
-        null = data.index(b"\x00", pos)
+        try:
+            null = data.index(b"\x00", pos)
+        except ValueError:
+            log.warning("generate_oft: truncated or corrupt file %s (no null byte at pos %d) — skipping", source_file, pos)
+            return
         if count % _OFT_STRIDE == 0:
             offsets.append(pos)
         pos = null + 1 + bytes_after_null
@@ -103,42 +107,6 @@ def decompress_dict_dz(folder: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def extract_stardict_zip(zip_path: Path, dest_folder: Path, dict_name: str, locale: str) -> None:
-    """Extract a StarDict zip into dest_folder, rename files to dict_name, then post-process.
-
-    Resource files under res/ are normalized via normalize_res_filename
-    (flattened subdirs, locale-prefixed) so naming is consistent across
-    single-locale and multi-locale outputs.
-    """
-    from .merge import normalize_res_filename
-
-    if not zip_path.exists():
-        log.warning("StarDict zip not found: %s — skipping", zip_path)
-        return
-    dest_folder.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.infolist():
-            parts = Path(member.filename).parts
-            if not parts or parts[-1] == "":
-                continue
-            # Find res/ anywhere in the path
-            if "res" in parts:
-                res_idx = parts.index("res")
-                rel = "/".join(parts[res_idx + 1:])
-                if not rel:
-                    continue
-                target = dest_folder / "res" / normalize_res_filename(rel, locale)
-            else:
-                target = dest_folder / parts[-1]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
-    rename_stardict_files(dest_folder, dict_name)
-    decompress_dict_dz(dest_folder)
-    generate_oft_files(dest_folder)
-    log.info("Extracted %s → %s", zip_path.name, dest_folder)
-
-
 def convert_df_to_stardict(df_src: Path, out_folder: Path, title: str, date: str, dict_name: str) -> None:
     """Convert a .df file to a StarDict dictionary in out_folder, named dict_name."""
     import gc
@@ -147,11 +115,10 @@ def convert_df_to_stardict(df_src: Path, out_folder: Path, title: str, date: str
 
     out_folder.mkdir(parents=True, exist_ok=True)
 
-    original_gc_collect = gc.collect
-    gc.collect = lambda *_: None  # type: ignore[assignment]
-
+    # Save and restore NO_SQLITE to avoid polluting global env
+    old_no_sqlite = os.environ.get("NO_SQLITE")
+    os.environ["NO_SQLITE"] = "1"
     try:
-        os.environ["NO_SQLITE"] = "1"
         Glossary.init()
         glos = Glossary()
         glos.config = {"auto_sqlite": False, "cleanup": False}
@@ -176,10 +143,15 @@ def convert_df_to_stardict(df_src: Path, out_folder: Path, title: str, date: str
             )
         )
     finally:
-        gc.collect = original_gc_collect  # type: ignore[assignment]
-
-    del glos
-    gc.collect()
+        # Restore NO_SQLITE env var
+        if old_no_sqlite is None:
+            os.environ.pop("NO_SQLITE", None)
+        else:
+            os.environ["NO_SQLITE"] = old_no_sqlite
+        # More aggressive cleanup to prevent PyGlossary state leaks
+        if "glos" in dir() and hasattr(glos, "clear"):
+            glos.clear()
+        gc.collect()
 
     rename_stardict_files(out_folder, dict_name)
     decompress_dict_dz(out_folder)

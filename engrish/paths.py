@@ -51,7 +51,12 @@ def dict_base_name(form: str, date: str, noetym: bool = False) -> str:
     dictionaries extract from en.wiktionary), not the Modern English locale.
     """
     suffix = "-noetym" if noetym else ""
-    return f"{form.replace('+', '_')}-en{suffix}-{date}"
+    return f"{form.replace('+', '-')}-en{suffix}-{date}"
+
+
+def locale_meta_path(locale: str) -> Path:
+    """Return path to locale-meta.json for a locale."""
+    return render_source_dir(locale) / "locale-meta.json"
 
 
 def get_snapshot_date(locales: list[str]) -> str:

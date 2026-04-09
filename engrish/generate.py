@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import gc
+import itertools
 import logging
 import shutil
 
-from .merge import collect_locale_res, merge_dfs, write_merged_df
+from .merge import clear_df_cache, collect_locale_res, iter_merged_dfs_streaming, write_merged_df
 from .paths import (
     dict_base_name,
     engrish_form_dir,
@@ -33,17 +34,24 @@ def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> N
             out_folder = form_dir / name
 
             log.info("Merging .df files (noetym=%s) → %s", noetym, merged_df)
-            merged = merge_dfs(locales, noetym=noetym)
-            if not merged:
+            entries = iter_merged_dfs_streaming(locales, noetym=noetym)
+            # Peek at the first entry to check for empty output before writing
+            first = next(entries, None)
+            if first is None:
                 log.warning("No entries produced for noetym=%s — skipping", noetym)
                 continue
 
-            write_merged_df(merged, merged_df)
-            del merged
+            write_merged_df(merged_df, itertools.chain([first], entries))
 
             title = f"Engrish: {form}" + (" (no etym)" if noetym else "")
             convert_df_to_stardict(merged_df, out_folder, title, date, name)
             patch_ifo(out_folder, name, ifo_fields(form, date, name))
+
+            # PyGlossary writes un-prefixed resource files to out_folder/res/ during
+            # conversion. Clear them so only correctly locale-prefixed files remain.
+            pyglossary_res = out_folder / "res"
+            if pyglossary_res.exists():
+                shutil.rmtree(pyglossary_res)
 
             locale_res: dict[str, bytes] = {}
             for locale in locales:
@@ -69,16 +77,23 @@ def process_form(form: str, locales: list[str]) -> None:
     form_dir = engrish_form_dir(form)
 
     form_dir.mkdir(parents=True, exist_ok=True)
-    for child in form_dir.iterdir():
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+    existing = list(form_dir.iterdir())
+    if existing:
+        log.warning("Wiping existing output: %s", form_dir)
+        for child in existing:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     date = get_snapshot_date(locales)
     log.info("Snapshot date: %s", date)
 
     log.info("Building StarDict for locales: %s", locales)
     build_merged_output(locales, form, form_dir, date)
+
+    # Clear .df cache to free memory after form is complete
+    clear_df_cache()
+    gc.collect()
 
     log.info("Done. Output: %s", form_dir)

@@ -14,7 +14,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from .config import FORM_NAMES, _ENGRISH_CFG
-from .merge import normalize_res_filename, parse_df
+from .merge import _get_cached_df, clear_df_cache, normalize_res_filename
 from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
 
 log = logging.getLogger(__name__)
@@ -78,18 +78,11 @@ def _extract_meta(word: str, syns: list[str], html: str, locale_name: str = "") 
     """Extract metadata from a .df entry's HTML without including the definition text."""
     size_kb = len(html.encode("utf-8")) / 1024
 
-    # Pronunciations: /.../ or \...\  — must contain at least one IPA character
-    # to avoid matching HTML tag fragments like </b></
-    pron = re.findall(r"[/\\]([^/\\<>]{1,50})[/\\]", html)
-    pron = [p for p in pron if re.search(r"[\u0250-\u02FF\u0300-\u036F\u00C0-\u024F]", p)]
-    pron = [f"/{p}/" for p in dict.fromkeys(pron)]
-
-
     return WordMeta(
         headword=word,
         size_kb=size_kb,
         synonym_count=len(syns),
-        pronunciations=pron[:4],  # cap at 4 to avoid clutter
+        pronunciations=_extract_pronunciations(html),
         name=locale_name,
     )
 
@@ -127,13 +120,15 @@ class ChapterInfo:
 
 
 def _load_locale_data(locales: list[str]) -> dict[str, dict[str, tuple[list[str], str]]]:
-    """Load .df data for all active locales."""
-    active = list(locales)
+    """Load .df data for all active locales.
+
+    Uses the module-level cache from merge.py to avoid re-parsing.
+    """
     data: dict[str, dict[str, tuple[list[str], str]]] = {}
-    for locale in active:
+    for locale in locales:
         path = df_path(locale, noetym=False)
         if path.exists():
-            data[locale] = parse_df(path)
+            data[locale] = _get_cached_df(locale, noetym=False)
         else:
             log.warning("No .df for %s, skipping", locale)
     return data
@@ -172,16 +167,27 @@ def _largest_entries(
     return locales
 
 
-def _has_alternates(word: str, entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
+def _has_alternates(entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
     """True if every locale's entry for this word has alternates."""
     return all(len(syns) > 0 for syns, _ in entries_by_locale.values())
 
 
-def _has_pronunciation(word: str, entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
+# IPA detection patterns (compiled once at module level)
+_IPA_PATTERN = re.compile(r"[/\\]([^/\\<>]{1,50})[/\\]")
+_IPA_CHARS = re.compile(r"[\u0250-\u02FF\u0300-\u036F\u00C0-\u024F]")
+
+
+def _extract_pronunciations(html: str, max_count: int = 4) -> list[str]:
+    """Extract IPA pronunciations from HTML content."""
+    pron = _IPA_PATTERN.findall(html)
+    pron = [p for p in pron if _IPA_CHARS.search(p)]
+    return [f"/{p}/" for p in dict.fromkeys(pron)][:max_count]
+
+
+def _has_pronunciation(entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
     """True if every locale's entry for this word has IPA pronunciation."""
     for syns, html in entries_by_locale.values():
-        pron = re.findall(r"[/\\]([^/\\<>]{1,50})[/\\]", html)
-        if not any(re.search(r"[\u0250-\u02FF\u0300-\u036F\u00C0-\u024F]", p) for p in pron):
+        if not _extract_pronunciations(html, max_count=1):
             return False
     return True
 
@@ -208,10 +214,12 @@ def _pick_constrained(
     selected: list[str] = []
     remaining = list(available)
 
+    # Each predicate takes a pre-fetched entries dict (not the word) to avoid
+    # calling entries_fn(w) twice per word per slot.
     slots = [
-        (2, lambda w: _has_alternates(w, entries_fn(w)) and _has_pronunciation(w, entries_fn(w))),
-        (1, lambda w: _has_alternates(w, entries_fn(w)) and not _has_pronunciation(w, entries_fn(w))),
-        (1, lambda w: not _has_alternates(w, entries_fn(w)) and _has_pronunciation(w, entries_fn(w))),
+        (2, lambda e: _has_alternates(e) and _has_pronunciation(e)),
+        (1, lambda e: _has_alternates(e) and not _has_pronunciation(e)),
+        (1, lambda e: not _has_alternates(e) and _has_pronunciation(e)),
     ]
 
     random_count = 2  # base random slots
@@ -220,7 +228,7 @@ def _pick_constrained(
         found = 0
         still_remaining = []
         for w in remaining:
-            if found < count and predicate(w):
+            if found < count and predicate(entries_fn(w)):
                 selected.append(w)
                 found += 1
             else:
@@ -290,56 +298,64 @@ _MAX_MISSING_WORDS = 1000
 def _find_missing_words(
     locale_data: dict[str, dict[str, tuple[list[str], str]]],
 ) -> list[dict]:
-    """Find words in the SQLite dump that didn't make it into the .df output."""
+    """Find words in the SQLite dump that didn't make it into the .df output.
+
+    Performs a single table scan and accumulates results for all locales
+    simultaneously, rather than one scan per locale.
+    """
     from wikidict import lang, utils
 
+    # Build per-locale head_sections and output word sets before scanning
+    locale_sections: dict[str, tuple[str, ...]] = {}
+    locale_df_words: dict[str, set[str]] = {}
+    for code in locale_data:
+        _, lang_dst = utils.guess_locales(code, use_log=False)
+        locale_sections[code] = tuple(
+            hs.replace(" ", "").lower() for hs in lang.head_sections[lang_dst]
+        )
+        df_syns: set[str] = set()
+        for syns, _ in locale_data[code].values():
+            df_syns.update(syns)
+        locale_df_words[code] = set(locale_data[code].keys()) | df_syns
+
+    # Single pass through the dump — accumulate dump_words per locale
+    dump_words: dict[str, set[str]] = {code: set() for code in locale_data}
     db_path = get_sqlite_path()
     con = sqlite3.connect(str(db_path))
-    results = []
-
     try:
         cur = con.cursor()
-        for code in locale_data:
-            _, lang_dst = utils.guess_locales(code, use_log=False)
-            head_sections = tuple(
-                hs.replace(" ", "") for hs in lang.head_sections[lang_dst]
-            )
-
-            # Get all words from the dump that have a section for this language
-            cur.execute("SELECT title, body FROM pages WHERE namespace_id = 0")
-            dump_words: set[str] = set()
-            for title, body in cur:
-                if body is None:
-                    continue
-                body_lower = body.lower().replace(" ", "")
-                if any(f"=={hs}==" in body_lower for hs in head_sections):
-                    dump_words.add(title)
-
-            df_words = set(locale_data[code].keys())
-            df_syns: set[str] = set()
-            for word, (syns, html) in locale_data[code].items():
-                df_syns.update(syns)
-            missing = sorted(dump_words - df_words - df_syns)
-
-            # Cap word list at 1000 to keep HTML size manageable
-            total_missing = len(missing)
-            truncated = total_missing > _MAX_MISSING_WORDS
-            display_missing = missing[:_MAX_MISSING_WORDS]
-
-            # Format into rows of 5 comma-separated words
-            word_rows = []
-            for i in range(0, len(display_missing), 5):
-                word_rows.append(", ".join(display_missing[i:i + 5]))
-
-            results.append({
-                "name": _locale_label(code),
-                "code": code,
-                "missing_count": total_missing,
-                "truncated": truncated,
-                "word_rows": word_rows,
-            })
+        cur.execute("SELECT title, body FROM pages WHERE namespace_id = 0")
+        for title, body in cur:
+            if body is None:
+                continue
+            body_lower = body.lower().replace(" ", "")
+            for code, sections in locale_sections.items():
+                if any(f"=={hs}==" in body_lower for hs in sections):
+                    dump_words[code].add(title)
     finally:
         con.close()
+
+    results = []
+    for code in locale_data:
+        missing = sorted(dump_words[code] - locale_df_words[code])
+
+        # Cap word list at 1000 to keep HTML size manageable
+        total_missing = len(missing)
+        truncated = total_missing > _MAX_MISSING_WORDS
+        display_missing = missing[:_MAX_MISSING_WORDS]
+
+        # Format into rows of 5 comma-separated words
+        word_rows = []
+        for i in range(0, len(display_missing), 5):
+            word_rows.append(", ".join(display_missing[i:i + 5]))
+
+        results.append({
+            "name": _locale_label(code),
+            "code": code,
+            "missing_count": total_missing,
+            "truncated": truncated,
+            "word_rows": word_rows,
+        })
 
     return results
 
@@ -436,7 +452,6 @@ def _find_cleanup_examples(
         merged_examples["images"] = img_examples
 
     # Build result — only categories with data
-    cat_lookup = {key: (name, desc) for key, name, desc in _CLEANUP_CATEGORIES}
     result = []
     for key, name, description in _CLEANUP_CATEGORIES:
         if key not in merged_counts or merged_counts[key] == 0:
@@ -572,7 +587,10 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
     # -- Write EPUB --
     epub_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(epub_path, "w") as zf:
-        zf.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip")
+        # EPUB spec: mimetype must be uncompressed and first in archive
+        mimetype_info = zipfile.ZipInfo("mimetype")
+        mimetype_info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(mimetype_info, "application/epub+zip")
         zf.writestr("META-INF/container.xml", _CONTAINER_XML, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
@@ -581,6 +599,9 @@ def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
             zf.writestr(f"OEBPS/{filename}", html, compress_type=zipfile.ZIP_DEFLATED)
 
     log.info("EPUB written: %s", epub_path)
+
+    # Cleanup large data structures
+    del locale_data, stats, chapter_html
 
 
 # ---------------------------------------------------------------------------
@@ -635,4 +656,6 @@ def run(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
             log.error("EPUB generation failed for '%s': %s", form, exc)
         gc.collect()
 
+    # Clear .df cache to free memory after all EPUBs are generated
+    clear_df_cache()
     return 0

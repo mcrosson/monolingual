@@ -7,6 +7,7 @@ import gzip
 import json
 import logging
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -137,6 +138,23 @@ def engrish_epubs(engrish_pipeline: dict[str, Path]) -> dict[str, Path]:
     return result
 
 
+@pytest.fixture(scope="session")
+def cached_merge_data(engrish_pipeline: dict[str, Path]) -> dict[str, dict[str, tuple[list[str], str]]]:
+    """Cache merged data per form to avoid re-parsing .df files in each test.
+
+    This significantly reduces memory usage by parsing each form's .df files
+    only once across all merge-related tests.
+    """
+    log = logging.getLogger(__name__)
+    result: dict[str, dict[str, tuple[list[str], str]]] = {}
+    for form, (locales, _) in TEST_FORMS.items():
+        log.info("[%s] Caching merged data", form)
+        result[form] = merge.merge_dfs(locales, noetym=False)
+        gc.collect()
+    merge.clear_df_cache()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Pipeline output verification
 # ---------------------------------------------------------------------------
@@ -187,10 +205,10 @@ def test_generate_ifo_metadata(engrish_pipeline: dict[str, Path], form: str) -> 
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
-def test_merge_dfs(engrish_pipeline: dict[str, Path], form: str) -> None:
+def test_merge_dfs(cached_merge_data: dict[str, dict[str, tuple[list[str], str]]], form: str) -> None:
     """Verify merge logic with real .df files."""
     locales, expect_overlap = TEST_FORMS[form]
-    merged = merge.merge_dfs(locales, noetym=False)
+    merged = cached_merge_data[form]
 
     assert merged, "merge_dfs returned empty dict"
 
@@ -219,11 +237,6 @@ def test_merge_dfs(engrish_pipeline: dict[str, Path], form: str) -> None:
                 f"Expected zero overlap for {form} but found {len(entries_with_headers)} "
                 "entries with <h3> headers — unexpected shared headwords"
             )
-
-    del merged
-    gc.collect()
-
-import re
 
 
 def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> None:
@@ -261,10 +274,10 @@ def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> Non
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
-def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
+def test_res_integrity(cached_merge_data: dict[str, dict[str, tuple[list[str], str]]], form: str) -> None:
     """Every res/ reference in merged HTML must have a matching file in collect_locale_res."""
     locales, _ = TEST_FORMS[form]
-    merged = merge.merge_dfs(locales, noetym=False)
+    merged = cached_merge_data[form]
 
     # Collect all src="res/..." references from HTML
     html_res_refs: set[str] = set()
@@ -273,8 +286,6 @@ def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
             html_res_refs.add(m.group(1))
 
     if not html_res_refs:
-        del merged
-        gc.collect()
         return  # no res/ references in this form's data
 
     # Collect actual files that would be written
@@ -287,9 +298,6 @@ def test_res_integrity(engrish_pipeline: dict[str, Path], form: str) -> None:
     assert not missing, (
         f"HTML references res/ files that don't exist in collect_locale_res: {sorted(missing)}"
     )
-
-    del merged
-    gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +323,7 @@ def test_epub_structure(engrish_epubs: dict[str, Path], form: str) -> None:
         assert "OEBPS/toc.ncx" in names
         assert "OEBPS/styles.css" in names
         assert "OEBPS/cover.html" in names
-        assert "OEBPS/cover.html" in names
+        assert "OEBPS/source_cleanup.html" in names
         assert "OEBPS/summary.html" in names
         assert "OEBPS/stress_test.html" in names
 
@@ -919,7 +927,7 @@ def test_no_fixable_orphaned_variants(engrish_pipeline: dict[str, Path], locale:
     import struct
 
     from engrish.paths import render_source_dir
-    from engrish.pipeline import _try_strip_combining
+    from engrish.pipeline import _build_base_form_map, _try_strip_combining
 
     rdir = render_source_dir(locale)
     jsons = sorted(rdir.glob("data-*.json"))
@@ -927,6 +935,7 @@ def test_no_fixable_orphaned_variants(engrish_pipeline: dict[str, Path], locale:
         pytest.skip(f"No source data for {locale}")
     source = json.loads(jsons[-1].read_text("utf-8"))
     headwords = set(source.keys())
+    base_map = _build_base_form_map(headwords)
 
     # Parse .idx words
     etym_dir = None
@@ -970,9 +979,9 @@ def test_no_fixable_orphaned_variants(engrish_pipeline: dict[str, Path], locale:
             if target in headwords:
                 # Target exists but word didn't make it into .syn — different issue
                 continue
-            resolved = _try_strip_combining(target, headwords)
+            resolved = _try_strip_combining(target, headwords, base_map)
             if resolved:
-                fixable.append((word, target, resolved))
+                fixable.append((word, target, resolved[0]))
                 break
 
     assert not fixable, (
@@ -1455,55 +1464,6 @@ def test_cleanup_removes_self_reference(tmp_path: Path) -> None:
     }
     result = _run_normalize(tmp_path, data)
     assert "variants" not in result["entry"]
-
-
-# -- Backward compat: existing chain tests with new signature --
-
-
-def test_resolve_variant_chain_compat() -> None:
-    """Original chain test with updated function signature."""
-    from engrish.pipeline import _resolve_variant_chain
-
-    data = {
-        "a": {"variants": ["b"]},
-        "b": {"variants": ["c"]},
-        "c": {"definitions": {"Noun": ["a thing"]}},
-    }
-    defs = {"c"}
-    headwords = set(data.keys())
-
-    assert _resolve_variant_chain("a", data, defs, headwords, {}) == "c"
-    assert _resolve_variant_chain("b", data, defs, headwords, {}) == "c"
-    assert _resolve_variant_chain("c", data, defs, headwords, {}) == "c"
-
-
-def test_resolve_variant_chain_cycle_compat() -> None:
-    from engrish.pipeline import _resolve_variant_chain
-
-    data = {
-        "a": {"variants": ["b"]},
-        "b": {"variants": ["a"]},
-    }
-    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
-
-
-def test_resolve_variant_chain_dead_end_compat() -> None:
-    from engrish.pipeline import _resolve_variant_chain
-
-    data = {
-        "a": {"variants": ["b"]},
-        "b": {},
-    }
-    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
-
-
-def test_resolve_variant_chain_missing_target_compat() -> None:
-    from engrish.pipeline import _resolve_variant_chain
-
-    data = {
-        "a": {"variants": ["nonexistent"]},
-    }
-    assert _resolve_variant_chain("a", data, set(), set(data.keys()), {}) is None
 
 
 # ---------------------------------------------------------------------------

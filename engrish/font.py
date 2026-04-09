@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from .config import EPUB_BASE_FONTS, FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
+from .config import FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
 
 log = logging.getLogger(__name__)
 
@@ -27,13 +27,32 @@ _GOOGLE_FONTS_BASE = "https://raw.githubusercontent.com/google/fonts/main/ofl"
 _GOOGLE_FONTS_API = "https://api.github.com/repos/google/fonts/contents/ofl"
 
 
+def _extract_font_stem(filename_stem: str) -> str:
+    """Extract font family stem from filename, preserving style variants.
+
+    Examples:
+        NotoSans[wght] -> NotoSans
+        NotoSans-Regular -> NotoSans
+        NotoSans-Italic -> NotoSans-Italic (preserve style)
+        NotoSans-BoldItalic -> NotoSans-BoldItalic (preserve style)
+    """
+    # Remove variable font weight suffix
+    stem = filename_stem.split("[")[0]
+    parts = stem.split("-")
+    # Preserve style variants (Italic, Bold, BoldItalic)
+    if len(parts) >= 2 and parts[-1] in ("Italic", "Bold", "BoldItalic"):
+        return "-".join(parts[:-1] + [parts[-1]])
+    # For other cases (Regular, etc.), return just the family
+    return parts[0]
+
+
 def _existing_stems(fonts_dir: Path) -> set[str]:
     """Return the set of font stems already present on disk."""
     stems: set[str] = set()
     if fonts_dir.is_dir():
         for f in fonts_dir.iterdir():
             if f.suffix in (".ttf", ".otf"):
-                stems.add(f.stem.split("[")[0].split("-")[0])
+                stems.add(_extract_font_stem(f.stem))
     return stems
 
 
@@ -113,13 +132,17 @@ def _download_font(stem: str, fonts_dir: Path) -> bool:
     for url, filename in _candidate_urls(stem):
         log.info("Trying %s", url)
         try:
-            resp = requests.get(url, timeout=60)
+            resp = requests.get(url, timeout=60, stream=True)
         except requests.RequestException:
             continue
         if resp.status_code == 200:
             dest = fonts_dir / filename
-            dest.write_bytes(resp.content)
-            log.info("Downloaded %s (%d bytes)", dest.name, len(resp.content))
+            size = 0
+            with dest.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    fh.write(chunk)
+                    size += len(chunk)
+            log.info("Downloaded %s (%d bytes)", dest.name, size)
             return True
         log.debug("  %d — %s", resp.status_code, url)
     return False
@@ -221,9 +244,10 @@ def _scan_chunk(
             if body is None:
                 continue
             body_lower = body.lower()
-            # Quick pre-filter: only parse headings if any target appears
-            possible = [t for t in target_set if t in body_lower]
-            if not possible:
+            # Quick pre-filter: skip page if no target section name appears anywhere.
+            # any() short-circuits on first match — O(1) best case vs O(n_targets)
+            # for a list comprehension, which matters significantly for --all mode.
+            if not any(t in body_lower for t in target_set):
                 continue
             for m in l2.finditer(body):
                 heading = m.group(1).lower()
@@ -281,7 +305,10 @@ def collect_headword_chars_batch(
     finally:
         con.close()
 
-    n_workers = os.cpu_count() or 4
+    # Cap at half of cpu_count: the scan is I/O-bound on the SQLite file and
+    # sees diminishing returns beyond ~4-6 workers while additional processes
+    # increase disk and memory contention.
+    n_workers = max(2, (os.cpu_count() or 4) // 2)
     chunk_size = (hi - lo + 2) // n_workers
     chunks = []
     for i in range(n_workers):
@@ -293,9 +320,13 @@ def collect_headword_chars_batch(
     # Run workers.
     merged: dict[str, set[str]] = {t: set() for t in targets_lower}
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        for partial in pool.map(_scan_chunk, *zip(*chunks)):
-            for t in targets_lower:
-                merged[t].update(partial[t])
+        try:
+            for partial in pool.map(_scan_chunk, *zip(*chunks)):
+                for t in targets_lower:
+                    merged[t].update(partial[t])
+        except Exception as exc:
+            log.error("Parallel dump scan failed: %s", exc)
+            raise
 
     # Return keyed by locale code.
     return {code: merged[sections[code].lower()] for code in locale_codes}
@@ -333,6 +364,37 @@ def _load_cmap(font_path: Path) -> set[int]:
     cmap = font.getBestCmap()
     font.close()
     return set(cmap) if cmap else set()
+
+
+def _greedy_set_cover(
+    remaining: set[int],
+    candidates: dict[str, set[int]],
+) -> list[tuple[str, set[int]]]:
+    """Greedy set cover: pick stems from candidates that cover remaining codepoints.
+
+    At each step picks the stem covering the most remaining codepoints.
+    Returns [(stem, covered_cps), ...] in selection order.
+    Modifies neither remaining nor candidates.
+    """
+    pool = dict(candidates)  # local copy so we can pop without affecting caller
+    left = set(remaining)
+    selected: list[tuple[str, set[int]]] = []
+    while left:
+        best_stem: str | None = None
+        best_count = 0
+        best_covered: set[int] = set()
+        for stem, cmap_cps in pool.items():
+            covered = left & cmap_cps
+            if len(covered) > best_count:
+                best_stem = stem
+                best_count = len(covered)
+                best_covered = covered
+        if not best_stem:
+            break
+        pool.pop(best_stem)
+        left -= best_covered
+        selected.append((best_stem, best_covered))
+    return selected
 
 
 _cached_cmaps: dict[str, set[int]] = {}
@@ -466,53 +528,30 @@ def detect_fonts(
                 if cm:
                     stem_cmaps[stem] = cm
 
-    def _stem_sort_key(stem: str) -> tuple[int, int, str]:
-        """Sort key: Sans before Serif, smaller cmap before larger, then alphabetical.
-
-        This prefers more targeted fonts (e.g. NotoSansMath over NotoSans)
-        when coverage count is equal, while still preferring Sans over Serif.
-        """
-        cmap_size = len(stem_cmaps.get(stem, ()))
-        return (0 if stem.startswith("NotoSans") else 1, cmap_size, stem)
-
-    def _greedy_cover() -> None:
-        """Pick fonts covering the most remaining codepoints until exhausted.
-
-        Tiebreakers when coverage count is equal: prefer Sans over Serif,
-        then alphabetical.  This ensures deterministic results.
-        """
+    def _run_cover() -> None:
+        """Run greedy set cover over loaded stem_cmaps, add results to `result`."""
         nonlocal remaining_cps
-        while remaining_cps:
-            best_stem: str | None = None
-            best_count = 0
-            best_covered: set[int] = set()
-            for stem in sorted(stem_cmaps, key=_stem_sort_key):
-                covered = remaining_cps & stem_cmaps[stem]
-                if len(covered) > best_count:
-                    best_stem = stem
-                    best_count = len(covered)
-                    best_covered = covered
-            if not best_stem:
-                break
-            result.add(best_stem)
-            remaining_cps -= best_covered
+        selected = _greedy_set_cover(remaining_cps, stem_cmaps)
+        for stem, covered in selected:
+            result.add(stem)
+            remaining_cps -= covered
 
     # Round 1: seed fonts
     if SEED_FONTS:
         _load_stems(set(SEED_FONTS))
-        _greedy_cover()
+        _run_cover()
 
     # Round 2: candidate fonts (name-prefix matched)
     if remaining_cps:
         _load_stems(confirmed)
-        _greedy_cover()
+        _run_cover()
 
     # Round 3: all other local fonts
     if remaining_cps:
         _load_stems(_existing_stems(FONTS_DIR))
-        _greedy_cover()
+        _run_cover()
 
-    # Round 3: CJK fonts (download if needed)
+    # Round 4: CJK fonts (download if needed)
     if remaining_cps and cjk_stems:
         cjk_to_download = cjk_stems - _existing_stems(FONTS_DIR)
         if cjk_to_download:
@@ -521,7 +560,7 @@ def detect_fonts(
             for stem in sorted(cjk_to_download):
                 _download_font(stem, FONTS_DIR)
         _load_stems(cjk_stems)
-        _greedy_cover()
+        _run_cover()
 
     # --- Stage 4: warn about truly uncovered characters ---
     unmatched_chars = {ch for ch in chars if ord(ch) in remaining_cps}
@@ -588,48 +627,6 @@ def run_update() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Font index and locale font resolution (moved from epub.py)
-# ---------------------------------------------------------------------------
-
-# Build font index from whatever font files exist in FONTS_DIR.
-_FONT_INDEX: dict[str, Path] = {}
-for _f in sorted(FONTS_DIR.glob("*")):
-    if _f.suffix in (".ttf", ".otf"):
-        _stem = _f.stem.split("[")[0].split("-")[0]
-        _FONT_INDEX[_stem] = _f
-
-
-def _fonts_for_locales(locales: list[str]) -> list[tuple[str, str]]:
-    """Return (font_stem, filename) pairs needed for the given locales.
-
-    Reads the 'fonts' list from each locale's engrish.json entry, unions them,
-    deduplicates, and sorts by file size (largest first so common scripts
-    appear first in the CSS font-family cascade).
-    """
-    needed: set[str] = set(EPUB_BASE_FONTS)
-    for locale in locales:
-        if locale not in _ENGRISH_CFG:
-            raise ValueError(f"Locale '{locale}' not found in engrish.json")
-        cfg = _ENGRISH_CFG[locale]
-        if "fonts" not in cfg:
-            raise ValueError(
-                f"Locale '{locale}' is missing the 'fonts' field in engrish.json"
-            )
-        needed.update(cfg["fonts"])
-
-    missing = needed - set(_FONT_INDEX)
-    if missing:
-        raise FileNotFoundError(
-            f"Font files not found in {FONTS_DIR}: {sorted(missing)}"
-        )
-
-    return [
-        (stem, _FONT_INDEX[stem].name)
-        for stem in sorted(needed, key=lambda s: -_FONT_INDEX[s].stat().st_size)
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Minimized font generation (subset + merge)
 # ---------------------------------------------------------------------------
 
@@ -644,68 +641,69 @@ def collect_codepoints(locales: list[str]) -> set[int]:
         if not path.exists():
             log.warning("No .df for %s at %s, skipping", locale, path)
             continue
-        text = path.read_text(encoding="utf-8")
-        codepoints.update(ord(ch) for ch in text)
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                codepoints.update(ord(ch) for ch in line)
     return codepoints
 
 
-def _select_fonts(
-    dict_cps: set[int],
-    fonts_dir: Path,
-    *,
-    italic: bool = False,
-) -> list[tuple[str, Path, set[int]]]:
-    """Greedy set cover: pick fonts from fonts_dir covering dict_cps.
+def _build_font_info(fonts_dir: Path) -> dict[str, tuple[Path, set[int], bool]]:
+    """Open every font in fonts_dir once and return {stem: (path, cmap_cps, has_fvar)}.
 
-    Skips CBDT-only fonts (no glyf, no CFF).
-    If italic=True, only includes fonts that have an italic variant file on disk.
-
-    Returns list of (stem, font_path, assigned_codepoints).
+    Skips engrish output files and italic variant files (identified by '-Italic' in the name).
+    Skips CBDT-only fonts (no glyf, no CFF tables).
+    Results are used by _select_fonts (twice) and the italic download loop, so each
+    font is opened exactly once per generate_fonts call.
     """
     from fontTools.ttLib import TTFont
 
-    available: dict[str, tuple[Path, set[int]]] = {}
+    info: dict[str, tuple[Path, set[int], bool]] = {}
     for fpath in sorted(fonts_dir.glob("*")):
         if fpath.suffix not in (".ttf", ".otf"):
             continue
         if fpath.name.startswith("engrish"):
             continue
-        # Skip italic files from the upright selection (they'll be used directly for italic builds)
         if "-Italic" in fpath.name:
             continue
         stem = fpath.stem.split("[")[0].split("-")[0]
         font = TTFont(fpath)
         has_glyf = "glyf" in font
         has_cff = "CFF " in font
+        has_fvar = "fvar" in font
         cmap = font.getBestCmap() or {}
         font.close()
         if not has_glyf and not has_cff:
             continue
+        info[stem] = (fpath, set(cmap.keys()), has_fvar)
+    return info
+
+
+def _select_fonts(
+    dict_cps: set[int],
+    font_info: dict[str, tuple[Path, set[int], bool]],
+    *,
+    italic: bool = False,
+    fonts_dir: Path | None = None,
+) -> list[tuple[str, Path, set[int]]]:
+    """Greedy set cover: pick fonts from font_info covering dict_cps.
+
+    If italic=True, only includes fonts that have an italic variant file on disk.
+    font_info must be pre-built by _build_font_info.
+
+    Returns list of (stem, font_path, assigned_codepoints).
+    """
+    candidates: dict[str, set[int]] = {}
+    path_map: dict[str, Path] = {}
+    for stem, (fpath, cmap_cps, _has_fvar) in font_info.items():
         if italic:
-            # Only include this font if an italic variant file exists
-            italic_file = _find_italic_file(stem, fonts_dir)
-            if not italic_file:
+            # Only include this font if an italic variant file exists on disk
+            if fonts_dir is None or not _find_italic_file(stem, fonts_dir):
                 continue
-        available[stem] = (fpath, set(cmap.keys()))
+        candidates[stem] = cmap_cps
+        path_map[stem] = fpath
 
-    remaining = set(dict_cps)
-    selected: list[tuple[str, Path, set[int]]] = []
-    while remaining:
-        best_stem = None
-        best_count = 0
-        for stem, (fpath, cmap_cps) in available.items():
-            overlap = len(remaining & cmap_cps)
-            if overlap > best_count:
-                best_stem = stem
-                best_count = overlap
-        if not best_stem or best_count == 0:
-            break
-        fpath, cmap_cps = available.pop(best_stem)
-        covered = remaining & cmap_cps
-        remaining -= covered
-        selected.append((best_stem, fpath, covered))
-
-    return selected
+    covered_list = _greedy_set_cover(dict_cps, candidates)
+    return [(stem, path_map[stem], covered) for stem, covered in covered_list]
 
 
 def _find_italic_file(stem: str, fonts_dir: Path) -> Path | None:
@@ -749,13 +747,17 @@ def _download_italic(stem: str, fonts_dir: Path) -> bool:
     for url, filename in urls:
         log.info("Trying italic: %s", url)
         try:
-            resp = requests.get(url, timeout=60)
+            resp = requests.get(url, timeout=60, stream=True)
         except requests.RequestException:
             continue
         if resp.status_code == 200:
             dest = fonts_dir / filename
-            dest.write_bytes(resp.content)
-            log.info("Downloaded %s (%d bytes)", dest.name, len(resp.content))
+            size = 0
+            with dest.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    fh.write(chunk)
+                    size += len(chunk)
+            log.info("Downloaded %s (%d bytes)", dest.name, size)
             return True
         log.debug("  %d — %s", resp.status_code, url)
     return False
@@ -801,6 +803,7 @@ def _build_merged_font(
             if italic and fonts_dir:
                 fpath = _find_italic_file(stem, fonts_dir)
                 if not fpath:
+                    log.warning("No italic file found for %s - codepoints may be missing from italic font", stem)
                     continue
             else:
                 fpath = upright_path
@@ -852,7 +855,9 @@ def _build_merged_font(
                 fb.setupOS2()
                 fb.setupPost()
                 fb.setupHead(unitsPerEm=upm)
+                old_font = font
                 font = fb.font
+                old_font.close()
                 for t, v in saved_tables.items():
                     font[t] = v
 
@@ -894,6 +899,8 @@ def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None
         engrish-italic.ttf      — italic-available scripts only, wght=400
         engrish-bold-italic.ttf — italic-available scripts only, wght=700
     """
+    import gc
+
     if not form:
         form = "+".join(locales)
 
@@ -902,51 +909,52 @@ def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None
         raise RuntimeError(f"No codepoints collected for form '{form}'")
     log.info("Collected %d codepoints for form '%s'", len(dict_cps), form)
 
-    # Ensure italic variants are available for fonts that publish them
-    for fpath in sorted(FONTS_DIR.glob("*")):
-        if fpath.suffix not in (".ttf", ".otf") or fpath.name.startswith("engrish"):
-            continue
-        if "-Italic" in fpath.name:
-            continue
-        stem = fpath.stem.split("[")[0].split("-")[0]
-        if not _find_italic_file(stem, FONTS_DIR):
-            # Only try downloading for stems likely to have italic (variable weight fonts)
-            from fontTools.ttLib import TTFont
-            f = TTFont(fpath)
-            has_fvar = "fvar" in f
-            f.close()
-            if has_fvar:
+    try:
+        # Build font info cache once — opens each font exactly once for cmap + fvar.
+        font_info = _build_font_info(FONTS_DIR)
+
+        # Ensure italic variants are available for fonts that publish them.
+        # Uses the pre-built font_info (has_fvar) to avoid re-opening fonts.
+        for stem, (_fpath, _cmap_cps, has_fvar) in font_info.items():
+            if has_fvar and not _find_italic_file(stem, FONTS_DIR):
                 _download_italic(stem, FONTS_DIR)
 
-    # Select fonts for upright variants (all scripts)
-    upright_selected = _select_fonts(dict_cps, FONTS_DIR, italic=False)
-    log.info("Selected %d fonts for upright variants", len(upright_selected))
+        # Select fonts for upright variants (all scripts)
+        upright_selected = _select_fonts(dict_cps, font_info, italic=False)
+        log.info("Selected %d fonts for upright variants", len(upright_selected))
 
-    # Select fonts for italic variants (only fonts with italic files)
-    italic_selected = _select_fonts(dict_cps, FONTS_DIR, italic=True)
-    log.info("Selected %d fonts for italic variants", len(italic_selected))
+        # Select fonts for italic variants (only fonts with italic files on disk)
+        italic_selected = _select_fonts(dict_cps, font_info, italic=True, fonts_dir=FONTS_DIR)
+        log.info("Selected %d fonts for italic variants", len(italic_selected))
 
-    # Build all 4 variants
-    variants = [
-        ("engrish-regular.ttf", upright_selected, 400.0, False),
-        ("engrish-bold.ttf", upright_selected, 700.0, False),
-        ("engrish-italic.ttf", italic_selected, 400.0, True),
-        ("engrish-bold-italic.ttf", italic_selected, 700.0, True),
-    ]
+        # Release font_info memory before building merged fonts
+        del font_info
+        gc.collect()
 
-    for filename, selected, wght, is_italic in variants:
-        if not selected:
-            log.warning("No fonts selected for %s, skipping", filename)
-            continue
-        out_path = output_dir / filename
-        log.info("Building %s (wght=%.0f, %d fonts)...", filename, wght, len(selected))
-        _build_merged_font(
-            selected, wght, out_path,
-            italic=is_italic, fonts_dir=FONTS_DIR,
-        )
+        # Build all 4 variants
+        variants = [
+            ("engrish-regular.ttf", upright_selected, 400.0, False),
+            ("engrish-bold.ttf", upright_selected, 700.0, False),
+            ("engrish-italic.ttf", italic_selected, 400.0, True),
+            ("engrish-bold-italic.ttf", italic_selected, 700.0, True),
+        ]
 
-    _cached_cmaps.clear()
-    log.info("Font generation complete for form '%s'", form)
+        for filename, selected, wght, is_italic in variants:
+            if not selected:
+                log.warning("No fonts selected for %s, skipping", filename)
+                continue
+            out_path = output_dir / filename
+            log.info("Building %s (wght=%.0f, %d fonts)...", filename, wght, len(selected))
+            _build_merged_font(
+                selected, wght, out_path,
+                italic=is_italic, fonts_dir=FONTS_DIR,
+            )
+
+        log.info("Font generation complete for form '%s'", form)
+    finally:
+        # Always clear cmap cache even on exception
+        _cached_cmaps.clear()
+        gc.collect()
 
 
 def run_font(dicts: list[str] | None, *, all_dicts: bool = False) -> int:

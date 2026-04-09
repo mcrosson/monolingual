@@ -8,6 +8,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from .config import L2_HEADING_PATTERN
 from .paths import get_sqlite_path
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,6 @@ def scan_language_stats(db_path: Path) -> dict[str, dict[str, int]]:
         TimeElapsedColumn,
     )
 
-    l2_heading = re.compile(r"^==\s*([^=]+?)\s*==\s*$", re.MULTILINE)
     defn_line = re.compile(r"^#+(?![:*])", re.MULTILINE)
     form_of_line = re.compile(r"^#+\s*\{\{[^|}]+ of\|", re.MULTILINE)
 
@@ -77,7 +77,7 @@ def scan_language_stats(db_path: Path) -> dict[str, dict[str, int]]:
                 if body is None or "==" not in body:
                     continue
 
-                headings = list(l2_heading.finditer(body))
+                headings = list(L2_HEADING_PATTERN.finditer(body))
                 if not headings:
                     continue
 
@@ -112,13 +112,9 @@ def scan_language_stats(db_path: Path) -> dict[str, dict[str, int]]:
 
 def run() -> int:
     """Download EN dump (if needed), parse (if needed), then show per-language statistics."""
-    from wikidict import download, parse
+    from .pipeline import ensure_wikidict_parsed
 
-    log.info("Ensuring EN Wiktionary dump is downloaded and parsed...")
-    download.main("en")
-    parse.main("en")
-
-    db_path = get_sqlite_path()
+    db_path = ensure_wikidict_parsed()
     log.info("Using database: %s", db_path)
 
     name_to_code = load_language_codes(db_path)
