@@ -441,6 +441,13 @@ def _cmap_for_stem(stem: str, fonts_dir: Path) -> set[int]:
     return cmap
 
 
+def clear_font_caches() -> None:
+    """Clear all module-level font caches to free memory."""
+    global _cached_stems
+    _cached_cmaps.clear()
+    _cached_stems = None
+
+
 def detect_fonts(
     locale_code: str,
     db_path: Path,
@@ -848,8 +855,10 @@ def _build_merged_font(
                     gs[gn].draw(cp)
                     gd[gn] = tp.glyph()
                     mt[gn] = (gs[gn].width, 0)
+                    del tp, cp
                 fb.setupGlyf(gd)
                 fb.setupHorizontalMetrics(mt)
+                del gd, mt, gs, go, cm
                 fb.setupHorizontalHeader(ascent=800, descent=-200)
                 fb.setupNameTable({"familyName": "Engrish", "styleName": "Regular"})
                 fb.setupOS2()
@@ -860,6 +869,7 @@ def _build_merged_font(
                 old_font.close()
                 for t, v in saved_tables.items():
                     font[t] = v
+                del saved_tables
 
             # Strip non-essential tables
             for tag in list(font.keys()):
@@ -878,9 +888,11 @@ def _build_merged_font(
         # Merge
         merger = Merger()
         merged = merger.merge(glyf_temps)
+        del merger
         output_path.parent.mkdir(parents=True, exist_ok=True)
         merged.save(str(output_path))
         merged.close()
+        del merged
 
         log.info("Built %s (%d bytes)", output_path.name, output_path.stat().st_size)
 
@@ -952,8 +964,8 @@ def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None
 
         log.info("Font generation complete for form '%s'", form)
     finally:
-        # Always clear cmap cache even on exception
-        _cached_cmaps.clear()
+        # Always clear all font caches even on exception
+        clear_font_caches()
         gc.collect()
 
 

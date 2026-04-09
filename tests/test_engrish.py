@@ -591,6 +591,38 @@ _FONT_VARIANTS = ["engrish-regular.ttf", "engrish-bold.ttf", "engrish-italic.ttf
 
 
 @pytest.fixture(scope="session")
+def noto_font_coverage() -> set[int]:
+    """Compute union of all on-disk Noto font cmaps once per session.
+
+    This is expensive (opens 100+ fonts) so it must be cached at session scope
+    rather than recomputed per parametrized test.
+    """
+    from fontTools.ttLib import TTFont
+
+    from engrish.config import FONTS_DIR
+
+    noto_covered: set[int] = set()
+    for fpath in FONTS_DIR.glob("*"):
+        if fpath.suffix not in (".ttf", ".otf"):
+            continue
+        if fpath.name.startswith("engrish"):
+            continue
+        if "-Italic" in fpath.name:
+            continue
+        f = TTFont(str(fpath))
+        has_glyf = "glyf" in f
+        has_cff = "CFF " in f
+        cm = f.getBestCmap()
+        f.close()
+        if not has_glyf and not has_cff:
+            continue
+        if cm:
+            noto_covered.update(cm.keys())
+    gc.collect()
+    return noto_covered
+
+
+@pytest.fixture(scope="session")
 def engrish_fonts(engrish_pipeline: dict[str, Path]) -> dict[str, Path]:
     """Generate minimized fonts for all test forms. Returns dict of form -> form dir."""
     from engrish.font import generate_fonts
@@ -631,14 +663,18 @@ def test_font_files_valid(engrish_fonts: dict[str, Path], form: str) -> None:
         assert cmap is not None, f"{variant} has no cmap"
         assert len(cmap) > 0, f"{variant} has empty cmap"
         font.close()
+    gc.collect()
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
-def test_font_regular_covers_dictionary(engrish_fonts: dict[str, Path], form: str) -> None:
+def test_font_regular_covers_dictionary(
+    engrish_fonts: dict[str, Path],
+    noto_font_coverage: set[int],
+    form: str,
+) -> None:
     """Regular font covers all .df codepoints that on-disk Noto fonts cover."""
     from fontTools.ttLib import TTFont
 
-    from engrish.config import FONTS_DIR
     from engrish.font import collect_codepoints
 
     locales, _ = TEST_FORMS[form]
@@ -649,29 +685,8 @@ def test_font_regular_covers_dictionary(engrish_fonts: dict[str, Path], form: st
 
     dict_cps = collect_codepoints(locales)
 
-    # Collect union of on-disk Noto font cmaps, applying the same filters
-    # as _select_fonts: skip engrish outputs, italic files, and CBDT-only
-    # fonts (no glyf, no CFF).
-    noto_covered: set[int] = set()
-    for fpath in FONTS_DIR.glob("*"):
-        if fpath.suffix not in (".ttf", ".otf"):
-            continue
-        if fpath.name.startswith("engrish"):
-            continue
-        if "-Italic" in fpath.name:
-            continue
-        f = TTFont(str(fpath))
-        has_glyf = "glyf" in f
-        has_cff = "CFF " in f
-        cm = f.getBestCmap()
-        f.close()
-        if not has_glyf and not has_cff:
-            continue
-        if cm:
-            noto_covered.update(cm.keys())
-
-    # Codepoints the regular font should cover = dict cps that any Noto font covers
-    expected = dict_cps & noto_covered
+    # Use session-scoped cached Noto font coverage
+    expected = dict_cps & noto_font_coverage
 
     font = TTFont(str(regular))
     regular_cps = set((font.getBestCmap() or {}).keys())
@@ -682,6 +697,7 @@ def test_font_regular_covers_dictionary(engrish_fonts: dict[str, Path], form: st
         f"Regular font for {form} missing {len(missing)} codepoints that Noto fonts cover: "
         f"{sorted(list(missing))[:20]}..."
     )
+    gc.collect()
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
@@ -702,6 +718,7 @@ def test_font_bold_matches_regular_coverage(engrish_fonts: dict[str, Path], form
         f"Bold/regular cmap mismatch for {form}: "
         f"{len(r_cps - b_cps)} in regular only, {len(b_cps - r_cps)} in bold only"
     )
+    gc.collect()
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
@@ -723,6 +740,7 @@ def test_font_italic_subset_of_regular(engrish_fonts: dict[str, Path], form: str
         f"Italic font for {form} has {len(extra)} codepoints not in regular: "
         f"{sorted(list(extra))[:20]}..."
     )
+    gc.collect()
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
@@ -743,6 +761,7 @@ def test_font_bold_italic_matches_italic_coverage(engrish_fonts: dict[str, Path]
         f"Bold-italic/italic cmap mismatch for {form}: "
         f"{len(i_cps - bi_cps)} in italic only, {len(bi_cps - i_cps)} in bold-italic only"
     )
+    gc.collect()
 
 
 @pytest.mark.parametrize("form", FORM_IDS)
@@ -759,6 +778,7 @@ def test_font_gsub_gpos_present(engrish_fonts: dict[str, Path], form: str) -> No
         assert "GSUB" in font, f"{variant} for {form} missing GSUB table"
         assert "GPOS" in font, f"{variant} for {form} missing GPOS table"
         font.close()
+    gc.collect()
 
 
 # ---------------------------------------------------------------------------
