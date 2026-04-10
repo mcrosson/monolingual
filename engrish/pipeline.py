@@ -495,15 +495,25 @@ def normalize_variant_targets(locale: str) -> None:
         log.info("[%s] Removed %s dead entries (no definitions, no variants)", locale, f"{len(dead_entries):,}")
 
     total = normalized + chains_resolved
-    if total or dangling_dropped or cleanup_modified:
-        if normalized:
-            log.info("[%s] Added %s normalized variant forms", locale, f"{normalized:,}")
-        if chains_resolved:
-            log.info("[%s] Resolved %s variant chains", locale, f"{chains_resolved:,}")
-        if dangling_dropped:
-            log.info("[%s] Dropped %s dangling variant targets", locale, f"{dangling_dropped:,}")
-        data_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-        # Invalidate convert output so it re-runs with the updated data
+    if normalized:
+        log.info("[%s] Added %s normalized variant forms", locale, f"{normalized:,}")
+    if chains_resolved:
+        log.info("[%s] Resolved %s variant chains", locale, f"{chains_resolved:,}")
+    if dangling_dropped:
+        log.info("[%s] Dropped %s dangling variant targets", locale, f"{dangling_dropped:,}")
+
+    # Check if JSON is already sorted (streaming k-way merge requires sorted .df input)
+    keys = list(data.keys())
+    needs_sort = keys != sorted(keys)
+
+    # Write JSON sorted if needed, or if normalization changed data
+    if needs_sort or total or dangling_dropped or cleanup_modified:
+        data_file.write_text(
+            json.dumps(dict(sorted(data.items())), ensure_ascii=False, indent=2), "utf-8"
+        )
+        if needs_sort:
+            log.info("[%s] Sorted JSON headwords for streaming merge", locale)
+        # Invalidate convert output so .df files are regenerated from sorted JSON
         out = output_dir(locale)
         if out.exists():
             shutil.rmtree(out)

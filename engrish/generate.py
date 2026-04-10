@@ -7,7 +7,7 @@ import itertools
 import logging
 import shutil
 
-from .merge import clear_df_cache, collect_locale_res, iter_merged_dfs_streaming, write_merged_df
+from .merge import clear_df_cache, collect_locale_res, iter_merged_dfs, write_merged_df
 from .paths import (
     dict_base_name,
     engrish_form_dir,
@@ -34,7 +34,7 @@ def build_merged_output(locales: list[str], form: str, form_dir, date: str) -> N
             out_folder = form_dir / name
 
             log.info("Merging .df files (noetym=%s) → %s", noetym, merged_df)
-            entries = iter_merged_dfs_streaming(locales, noetym=noetym)
+            entries = iter_merged_dfs(locales, noetym=noetym)
             # Peek at the first entry to check for empty output before writing
             first = next(entries, None)
             if first is None:

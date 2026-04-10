@@ -214,70 +214,19 @@ def collect_locale_res(locale: str, noetym: bool) -> dict[str, bytes]:
 # ---------------------------------------------------------------------------
 
 
-def _load_per_locale(
-    locales: list[str], noetym: bool
-) -> tuple[dict[str, dict[str, tuple[list[str], str]]], list[str]]:
-    """Load per-locale .df data and return (per_locale, active_locales).
-
-    Uses the module-level cache to avoid re-parsing the same .df files.
-    """
-    per_locale: dict[str, dict[str, tuple[list[str], str]]] = {}
-    for locale in locales:
-        path = df_path(locale, noetym=noetym)
-        if not path.exists():
-            log.warning("Missing .df file: %s — skipping", path)
-            continue
-        per_locale[locale] = _get_cached_df(locale, noetym)
-    active = [loc for loc in locales if loc in per_locale]
-    return per_locale, active
-
-
 def iter_merged_dfs(
     locales: list[str], noetym: bool = False
 ) -> Iterator[tuple[str, list[str], str]]:
-    """Yield (word, syns, html) for every merged entry in sorted order.
+    """Yield (word, syns, html) using streaming k-way merge for bounded memory.
 
-    Loads all locale data into per_locale (one copy in RAM), then yields
-    entries one at a time without building a full merged dict. This eliminates
-    the second full copy of all locale data that the old merge_dfs approach
-    required when combined with write_merged_df.
-    """
-    per_locale, active = _load_per_locale(locales, noetym)
-
-    all_words: set[str] = set()
-    for entries in per_locale.values():
-        all_words.update(entries.keys())
-
-    for word in sorted(all_words):
-        present = [(loc, per_locale[loc][word]) for loc in active if word in per_locale.get(loc, {})]
-        if len(present) == 1:
-            loc, (syns, html) = present[0]
-            yield word, syns, prefix_res_urls(html, loc)
-        else:
-            seen_syns: set[str] = set()
-            all_syns: list[str] = []
-            combined = ""
-            for loc, (syns, html) in present:
-                for s in syns:
-                    if s not in seen_syns:
-                        seen_syns.add(s)
-                        all_syns.append(s)
-                combined += f"<h3>{FORM_NAMES[loc]}</h3>{prefix_res_urls(html, loc)}"
-            yield word, all_syns, combined
-
-
-def iter_merged_dfs_streaming(
-    locales: list[str], noetym: bool = False
-) -> Iterator[tuple[str, list[str], str]]:
-    """Yield (word, syns, html) using streaming merge-sort for bounded memory.
-
-    Uses a classic k-way merge-sort directly on sorted .df files:
-    - Opens streaming iterators for each locale's .df file
-    - At each step, yields the smallest headword across all iterators
-    - Entries for the same word across locales are combined
+    Opens streaming iterators for each locale's .df file. At each step, yields
+    the smallest headword across all iterators; entries for the same word across
+    locales are combined with <h3> section headers.
 
     Memory: O(num_locales) instead of O(total_entries).
-    Requires .df files to be sorted alphabetically (wikidict guarantees this).
+    Requires .df files to be sorted alphabetically by headword. The pipeline
+    ensures this by sorting JSON in normalize_variant_targets() before wikidict
+    convert writes .df files.
     """
     active_locales: list[str] = []
     df_iters: dict[str, Iterator[tuple[str, list[str], str]]] = {}
@@ -334,18 +283,6 @@ def iter_merged_dfs_streaming(
                         all_syns.append(s)
                 combined += f"<h3>{FORM_NAMES[locale]}</h3>{html}"
             yield min_word, all_syns, combined
-
-
-def merge_dfs(
-    locales: list[str], noetym: bool = False
-) -> dict[str, tuple[list[str], str]]:
-    """Merge .df files from multiple locales, preserving caller's locale order.
-
-    Returns a full dict — used by tests that need random access.
-    Production code should use iter_merged_dfs + write_merged_df_streaming
-    to avoid building this second copy.
-    """
-    return {word: (syns, html) for word, syns, html in iter_merged_dfs(locales, noetym)}
 
 
 def write_merged_df(

@@ -149,7 +149,7 @@ def cached_merge_data(engrish_pipeline: dict[str, Path]) -> dict[str, dict[str, 
     result: dict[str, dict[str, tuple[list[str], str]]] = {}
     for form, (locales, _) in TEST_FORMS.items():
         log.info("[%s] Caching merged data", form)
-        result[form] = merge.merge_dfs(locales, noetym=False)
+        result[form] = {w: (s, h) for w, s, h in merge.iter_merged_dfs(locales, noetym=False)}
         gc.collect()
     merge.clear_df_cache()
     return result
@@ -242,7 +242,7 @@ def test_merge_dfs(cached_merge_data: dict[str, dict[str, tuple[list[str], str]]
 def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> None:
     """Merged <h3> headers must appear in the order the caller specified."""
     locales = ["ang", "enm", "en"]
-    merged = merge.merge_dfs(locales, noetym=False)
+    merged = {w: (s, h) for w, s, h in merge.iter_merged_dfs(locales, noetym=False)}
 
     # Find a word present in all three locales
     overlapping = {
@@ -261,7 +261,7 @@ def test_merge_dfs_honors_locale_order(engrish_pipeline: dict[str, Path]) -> Non
 
     # Reverse the locale list and verify headers follow the new order
     reversed_locales = list(reversed(locales))
-    merged_rev = merge.merge_dfs(reversed_locales, noetym=False)
+    merged_rev = {w: (s, h) for w, s, h in merge.iter_merged_dfs(reversed_locales, noetym=False)}
     _, html_rev = merged_rev[word]
     positions_rev = [html_rev.index(f"<h3>{FORM_NAMES[loc]}</h3>") for loc in reversed_locales]
     assert positions_rev == sorted(positions_rev), (
