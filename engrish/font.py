@@ -885,21 +885,55 @@ def _build_merged_font(
             log.warning("No fonts to merge for %s", output_path)
             return
 
-        # Merge
-        merger = Merger()
-        merged = merger.merge(glyf_temps)
-        del merger
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        merged.save(str(output_path))
-        merged.close()
-        del merged
+        # Incremental pairwise merge — O(2 fonts) memory instead of O(N fonts).
+        # Merger.merge() loads ALL input fonts simultaneously, which OOMs on
+        # large font sets (CJK + multi-locale). Merging in pairs bounds memory.
+        intermediate_temps: list[str] = []
+        try:
+            import gc
+            import os as _os
+            import shutil as _shutil
 
-        log.info("Built %s (%d bytes)", output_path.name, output_path.stat().st_size)
+            while len(glyf_temps) > 1:
+                # Merge first two fonts
+                merger = Merger()
+                pair_merged = merger.merge(glyf_temps[:2])
+                del merger
+
+                # Save merged result to a new temp file
+                pair_tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+                pair_merged.save(pair_tmp.name)
+                pair_merged.close()
+                del pair_merged
+                intermediate_temps.append(pair_tmp.name)
+
+                # Remove the two consumed temp files immediately
+                for consumed in glyf_temps[:2]:
+                    _os.unlink(consumed)
+
+                # Replace consumed pair with merged result
+                glyf_temps = [pair_tmp.name] + glyf_temps[2:]
+                gc.collect()
+
+            # Final font is the fully merged result
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.move(glyf_temps[0], str(output_path))
+            glyf_temps = []  # Already moved, don't delete in finally
+
+            log.info("Built %s (%d bytes)", output_path.name, output_path.stat().st_size)
+
+        finally:
+            # Clean up any remaining intermediate temps on error
+            import os as _os2
+            for f in intermediate_temps:
+                if f not in glyf_temps and Path(f).exists():
+                    _os2.unlink(f)
 
     finally:
         import os
         for f in glyf_temps:
-            os.unlink(f)
+            if Path(f).exists():
+                os.unlink(f)
 
 
 def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None:
