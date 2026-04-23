@@ -1,8 +1,5 @@
 """Internationalization stuff."""
 
-import json
-import os
-import types
 from collections import defaultdict
 from collections.abc import Callable
 from importlib import import_module
@@ -10,52 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from . import defaults
-from .. import constants as _wikidict_constants
 
 _ALL_LOCALES = {
     locale.name: import_module(f"wikidict.lang.{locale.name}")
     for locale in sorted(Path(__file__).parent.glob("*"))
     if locale.is_dir() and bool(list(locale.glob("*.py", case_sensitive=True)))
 }
-
-# Register derived languages from engrish.json (languages extracted from the
-# English Wiktionary with definitions in Modern English).
-# Only active when ENGRISH_MODE env var is set (by engrish/__init__.py) so
-# non-engrish use of wikidict is unaffected.
-_ENGRISH_JSON = Path(__file__).parent.parent.parent / "engrish" / "engrish.json"
-if os.environ.get("ENGRISH_MODE") and _ENGRISH_JSON.exists() and "en" in _ALL_LOCALES:
-    _engrish_cfg = json.loads(_ENGRISH_JSON.read_text(encoding="utf-8")).get("languages", {})
-    _en_module = _ALL_LOCALES["en"]
-    for _code, _cfg in _engrish_cfg.items():
-        if _code == "en":
-            # "en" is the source wikidict module itself — its parsing rules
-            # are already correct.  Just register it in LOCALE_ORIGIN.
-            _wikidict_constants.LOCALE_ORIGIN[_code] = "en"
-            continue
-        if _code in _ALL_LOCALES:
-            # Overwrite all public attrs from `en` so we use EN wiktionary
-            # parsing rules, not the native module's rules.
-            _existing = _ALL_LOCALES[_code]
-            _en_attrs = {a for a in dir(_en_module) if not a.startswith("_")}
-            for _attr in _en_attrs:
-                setattr(_existing, _attr, getattr(_en_module, _attr))
-            # Delete native attrs that `en` doesn't define so _populate
-            # falls back to defaults (e.g. ru.section_level = 1 → default 2).
-            for _attr in dir(defaults):
-                if not _attr.startswith("_") and _attr not in _en_attrs and hasattr(_existing, _attr):
-                    delattr(_existing, _attr)
-            _existing.head_sections = (_cfg["wiktionary_section"],)
-            _wikidict_constants.LOCALE_ORIGIN[_code] = "en"
-            continue
-        _mod = types.ModuleType(f"wikidict.lang.{_code}")
-        for _attr in dir(_en_module):
-            if not _attr.startswith("_"):
-                setattr(_mod, _attr, getattr(_en_module, _attr))
-        _mod.head_sections = (_cfg["wiktionary_section"],)
-        _heading_title = _cfg["wiktionary_section"].replace(" ", "_").title()
-        _mod.random_word_url = f"https://en.wiktionary.org/wiki/Special:RandomInCategory/{_heading_title}_lemmas#{_heading_title.replace('_', ' ')}"
-        _wikidict_constants.LOCALE_ORIGIN[_code] = "en"
-        _ALL_LOCALES[_code] = _mod
 
 
 def _populate(attr: str) -> dict[str, Any]:

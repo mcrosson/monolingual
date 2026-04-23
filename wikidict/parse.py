@@ -163,8 +163,14 @@ def xml_parse_element(
     return empty
 
 
-def process(file: Path, locale: str) -> bool:
-    """Process the big XML file and retain only information we are interested in."""
+def process(file: Path, locale: str, *, force_monolingual: bool = False) -> bool:
+    """Process the big XML file and retain only information we are interested in.
+
+    ``force_monolingual=True`` treats every locale as monolingual (module /
+    template / appendix pages are parsed), irrespective of ``lang_src == lang_dst``.
+    Set by ``engrish.wikidict_shim`` via ``functools.partial`` when engrish mode
+    is active, since every engrish-derived locale sources from the EN dump.
+    """
     lang_src, lang_dst = utils.guess_locales(locale, use_log=False)
 
     utils.setup_logging(lang_src, lang_dst)
@@ -175,8 +181,8 @@ def process(file: Path, locale: str) -> bool:
     template_matcher = re.compile(rf"<title>({lang.template_trans[lang_dst]}:[^<]+)</title>").finditer
     appendix_matcher = re.compile(rf"<title>({lang.appendix_trans[lang_dst]}:[^<]+)</title>").finditer
 
-    is_monolingual = lang_src == lang_dst
-    context.setup_modules_db(locale, db_already_setup=False)
+    if is_monolingual := (force_monolingual or lang_src == lang_dst):
+        context.setup_modules_db(locale, db_already_setup=False)
 
     for element in xml_iter_parse(file, locale):
         title, code = xml_parse_element(
@@ -184,7 +190,7 @@ def process(file: Path, locale: str) -> bool:
             module_matcher,
             template_matcher,
             appendix_matcher,
-            is_monolingual=True,
+            is_monolingual=is_monolingual,
         )
         if not title or not code or (lang_dst == "en" and title[:19] == "Unsupported titles/"):
             continue

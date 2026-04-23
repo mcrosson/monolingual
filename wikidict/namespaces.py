@@ -24,15 +24,3 @@ namespaces = {
     "zh": ["CAT", "Category", "File", "Image", "分类", "分類", "图像", "图片", "圖像", "圖片", "文件", "档案", "檔案"],
 }
 # END
-
-# Auto-populate namespaces for engrish.json derived languages (all use EN Wiktionary namespaces)
-# Only active in engrish mode so non-engrish wikidict usage is unaffected.
-import json
-import os
-from pathlib import Path
-
-_engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
-if os.environ.get("ENGRISH_MODE") and _engrish_json.exists():
-    for _code in json.loads(_engrish_json.read_text(encoding="utf-8")).get("languages", {}):
-        if _code not in namespaces and "en" in namespaces:
-            namespaces[_code] = list(namespaces["en"])

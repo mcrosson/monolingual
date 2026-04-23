@@ -13,6 +13,7 @@ import shutil
 import threading
 from collections import defaultdict
 from contextlib import suppress
+from copy import deepcopy  # noqa: F401 — retained for upstream-parity; see risk-convert-py-deepcopy-removed
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path

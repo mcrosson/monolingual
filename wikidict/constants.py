@@ -1,7 +1,5 @@
 """Shared constants."""
 
-import json
-import os
 from pathlib import Path
 
 import requests
@@ -33,14 +31,9 @@ ZIP_WORDS_SNAPSHOT = "___snapshot.txt"
 ASSET_CHECKSUM_ALGO = "sha256"
 
 # Locales relations
-# Derived languages from engrish.json all use the English Wiktionary as source.
-# Only populated in engrish mode so non-engrish wikidict usage is unaffected.
+# Example with FRO (Old French) that uses the FR (French) Wiktionary dump as source.
 # Syntax: "locale": "origin locale"
-_engrish_json = Path(__file__).parent.parent / "engrish" / "engrish.json"
-LOCALE_ORIGIN: dict[str, str] = {}
-if os.environ.get("ENGRISH_MODE") and _engrish_json.exists():
-    LOCALE_ORIGIN.update({code: "en" for code in json.loads(_engrish_json.read_text(encoding="utf-8")).get("languages", {})})
-LOCALE_ORIGIN["fro"] = "fr"  # Old French uses the French Wiktionary
+LOCALE_ORIGIN = {"fro": "fr"}
 
 # Dictionaries known to be problematic about the number of chars in MobiPocket
 MOBI_CLEANUP = {"en", "en:en", "fr", "fr:fr"}
