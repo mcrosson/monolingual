@@ -8,10 +8,10 @@ Locales: es
 | §1 variant-only entries (skipped per F17) | 91,431 | 0 (skipped, become & lines under canonical) | ✓ | OK |  |
 | §2 broken-target variant pointers (upstream data drift) | 857 | reported via broken_variants.txt (per locale) | ✓ | SOURCE | upstream Wiktionary cites parent forms not present in extraction; matches wikidict.convert behavior; categorized via §3a heuristic in artifact |
 | §4 .df @ headword count | - | 642,573 | ✓ | OK |  |
-| §5 .df & synonym count | - | 97,853 | ✓ | OK |  |
+| §5 .df & synonym count | - | 93,623 | ✓ | OK |  |
 | §6 .ifo wordcount == .df @ count | .ifo wordcount=642,573 | .df @ count=642,573 | ✓ | OK |  |
-| §6 .ifo synwordcount == .df & count | .ifo synwordcount=97,853 | .df & count=97,853 | ✓ | OK |  |
-| §5 every & synonym points at a real @ | 97,853 & lines | 0 broken | ✓ | OK |  |
+| §6 .ifo synwordcount == .df & count | .ifo synwordcount=93,623 | .df & count=93,623 | ✓ | OK |  |
+| §5 every & synonym points at a real @ | 93,623 & lines | 0 broken | ✓ | OK |  |
 | §7 res/ URLs in HTML have backing files | 0 unique res/ refs | n/a (no res/ embeds in .df) | ✓ | OK |  |
 
 **Bugs:** 0 • **Source-data findings:** 1

@@ -157,7 +157,7 @@ U+0919 Italian:arancia
 U+091A Italian:cela
 U+091B Italian:chador
 U+091C Italian:baza
-U+091E Italian:gangia
+U+091E Italian:gange
 U+091F Italian:petonciano
 U+0920 Italian:costo
 U+0921 Italian:baral
@@ -203,16 +203,16 @@ U+0B3E Italian:palanchino
 U+0B3F Italian:palanchino
 U+0B4D Italian:palanchino
 U+0B95 Italian:catamarano
-U+0B99 Italian:mango
+U+0B99 Italian:manghi
 U+0B9F Italian:catamarano
 U+0BA4 Italian:corindone
 U+0BA8 Italian:corindone
 U+0BAA Italian:paria
 U+0BAE Italian:catamarano
-U+0BAF Italian:mango
+U+0BAF Italian:manghi
 U+0BB0 Italian:catamarano
 U+0BB1 Italian:paria
-U+0BBE Italian:mango
+U+0BBE Italian:manghi
 U+0BC1 Italian:catamarano
 U+0BC8 Italian:paria
 U+0BCD Italian:catamarano
@@ -423,7 +423,6 @@ U+4F8D Italian:samurai
 U+4FF3 Italian:haiku
 U+5200 Italian:catana
 U+5206 Italian:bu
-U+5229 Italian:Mori
 U+523A Italian:sashimi
 U+529B Italian:risciò
 U+5357 Italian:Annam
@@ -480,7 +479,6 @@ U+6771 Italian:Canton
 U+67D4 Italian:judo
 U+67FF Italian:cachi
 U+6850 Italian:setino
-U+68EE Italian:Mori
 U+6B4C Italian:kabuki
 U+6B69 Italian:bu
 U+6BD2 Italian:sodoku
@@ -581,7 +579,7 @@ U+1030D Italian:Bolsena
 U+1030F Italian:decotto
 U+10310 Italian:Fiesole
 U+10313 Italian:Arezzo
-U+10314 Italian:Chiusi
+U+10314 Italian:Fiesole
 U+10315 Italian:Arezzo
 U+10316 Italian:cembro
 U+10317 Italian:Tarquinia
@@ -606,9 +604,9 @@ U+1033F Italian:baita
 U+10340 Italian:nappo
 U+10342 Italian:Alarico
 U+10343 Italian:Alarico
-U+10344 Italian:astio
+U+10344 Italian:asti
 U+10345 Italian:ammannire
-U+10346 Italian:astio
+U+10346 Italian:asti
 U+10349 Italian:banda
 U+103A0 Italian:Achemene
 U+103A1 Italian:Achemene

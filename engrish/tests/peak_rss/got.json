@@ -1,7 +1,7 @@
 {
   "form": "got",
   "host_total_ram_mb": 47834,
-  "measured_at": "2026-05-10T14:14:27",
+  "measured_at": "2026-05-11T19:05:41",
   "poll_interval_s": 0.1,
   "stages": [
     {
@@ -14,9 +14,9 @@
         "got"
       ],
       "rc": 0,
-      "wall_s": 1.511,
-      "peak_rss_kb": 81344,
-      "peak_rss_mb": 79.4,
+      "wall_s": 1.712,
+      "peak_rss_kb": 80928,
+      "peak_rss_mb": 79.0,
       "stage": "generate"
     },
     {
@@ -30,8 +30,8 @@
       ],
       "rc": 0,
       "wall_s": 1.209,
-      "peak_rss_kb": 71592,
-      "peak_rss_mb": 69.9,
+      "peak_rss_kb": 81068,
+      "peak_rss_mb": 79.2,
       "stage": "epub"
     },
     {
@@ -44,9 +44,9 @@
         "got"
       ],
       "rc": 0,
-      "wall_s": 4.231,
-      "peak_rss_kb": 118428,
-      "peak_rss_mb": 115.7,
+      "wall_s": 4.432,
+      "peak_rss_kb": 118168,
+      "peak_rss_mb": 115.4,
       "stage": "font"
     }
   ]

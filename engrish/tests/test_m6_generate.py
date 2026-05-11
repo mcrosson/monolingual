@@ -521,6 +521,406 @@ def test_merge_dfs_unions_amp_lines_across_sources(tmp_path: Path) -> None:
     assert "der Lohn" in content
 
 
+# --- M14 (D44) syn-head case-collision regression tests ---
+
+
+def test_merge_dfs_m14_stelae_cross_locale_syn_head_collision(tmp_path: Path) -> None:
+    """M14 (D44, 2026-05-11) — Option A1, cross-locale @<->& case-fold collision.
+
+    Setup: en has stela (Noun) with stelae as variant-only synonym.
+    la has Stelae (Latin Proper Noun) as its own headword.
+    The lowercase synonym `stelae` and the capitalized headword `Stelae`
+    share a case-fold; pre-fix the merged .df keeps both as distinct entries
+    and case-insensitive client lookups return only @ Stelae.
+
+    Post-fix invariants (A1):
+    - @ stela exists with body unchanged (singular stays clean — no Crete).
+    - @ stelae exists (NEW) — the coalesced entry.
+    - @ Stelae does NOT exist standalone.
+    - & Stelae is the synonym under @ stelae (so explicit-case Stelae lookup
+      still resolves via .syn).
+    - @ stela's preamble does NOT contain `& stelae` anymore (superseded).
+    - @ stelae's body = [stela's Modern English body, <h3>* * *</h3>,
+                         Stelae's Latin Proper Noun body annotated].
+    """
+    en_data = {
+        "stela": {"definitions": {"Noun": ["upright stone pillar"]}},
+        "stelae": {"variants": ["stela"]},
+    }
+    la_data = {
+        "Stelae": {"definitions": {"Proper Noun": ["a city of Crete"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    la_df = _write_fixture(tmp_path, "la.df", la_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df, la_df], merged, form_locales=["en", "la"])
+    content = merged.read_text(encoding="utf-8")
+
+    headwords = [line[2:] for line in content.splitlines() if line.startswith("@ ")]
+    assert "stela" in headwords, headwords
+    assert "stelae" in headwords, headwords
+    assert "Stelae" not in headwords, headwords
+
+    # @ stela block (up to next @): body clean, no `& stelae`, no Latin Crete.
+    stela_at = content.index("@ stela\n")
+    stelae_at = content.index("@ stelae\n")
+    assert stela_at < stelae_at
+    stela_block = content[stela_at:stelae_at]
+    assert "& stelae" not in stela_block, (
+        "`& stelae` should be dropped from @ stela's preamble post-M14 "
+        f"(superseded by @ stelae). Block:\n{stela_block}"
+    )
+    assert "Crete" not in stela_block, "singular @ stela MUST stay clean per A1"
+    assert "upright stone pillar" in stela_block
+
+    # @ stelae block: contains both bodies + separator + Capitalized annotation +
+    # & Stelae synonym.
+    stelae_end = content.find("\n@ ", stelae_at + 1)
+    if stelae_end == -1:
+        stelae_end = len(content)
+    stelae_block = content[stelae_at:stelae_end]
+    assert "& Stelae" in stelae_block
+    assert "upright stone pillar" in stelae_block
+    assert "Crete" in stelae_block
+    assert "<h3>* * *</h3>" in stelae_block
+    assert "(Capitalized: Stelae)" in stelae_block
+    # Order: singular's body first, separator, then annotated capitalized.
+    pillar_pos = stelae_block.index("upright stone pillar")
+    sep_pos = stelae_block.index("<h3>* * *</h3>")
+    crete_pos = stelae_block.index("Crete")
+    assert pillar_pos < sep_pos < crete_pos, (
+        f"order wrong inside @ stelae: pillar={pillar_pos}, sep={sep_pos}, crete={crete_pos}"
+    )
+
+
+def test_merge_dfs_m14_within_locale_cooks_collision(tmp_path: Path) -> None:
+    """M14 (D44) — Option A1, within-locale @<->& case-fold collision.
+
+    A single locale's render JSON has `cook` (verb/noun with `cooks` as
+    inflected variant) and `Cooks` (surname Proper Noun). After df_writer,
+    en.df has @ cook + `& cooks` line + @ Cooks. Merge (k=1) must produce:
+    - @ cook (singular, clean — no surname leak)
+    - @ cooks (NEW) with cook's body + separator + Cooks's body annotated
+    - No @ Cooks standalone
+    """
+    en_data = {
+        "cook": {"definitions": {"Verb": ["to prepare food"]}},
+        "cooks": {"variants": ["cook"]},
+        "Cooks": {"definitions": {"Proper Noun": ["a surname"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df], merged, form_locales=["en"])
+    content = merged.read_text(encoding="utf-8")
+
+    headwords = [line[2:] for line in content.splitlines() if line.startswith("@ ")]
+    assert "cook" in headwords
+    assert "cooks" in headwords
+    assert "Cooks" not in headwords
+
+    cook_at = content.index("@ cook\n")
+    cooks_at = content.index("@ cooks\n")
+    cook_block = content[cook_at:cooks_at]
+    assert "& cooks" not in cook_block, (
+        "`& cooks` should be dropped from @ cook (superseded by @ cooks)"
+    )
+    assert "surname" not in cook_block, "singular @ cook stays clean per A1"
+
+    cooks_block = content[cooks_at:]
+    assert "& Cooks" in cooks_block
+    assert "to prepare food" in cooks_block  # cook's body inherited
+    assert "surname" in cooks_block
+    assert "(Capitalized: Cooks)" in cooks_block
+    assert "<h3>* * *</h3>" in cooks_block
+
+
+def test_merge_dfs_m14_negative_self_redirect_no_collision_triggered(tmp_path: Path) -> None:
+    """M14 (D44) — negative case: same-case-fold synonym pointing AT the colliding
+    head (i.e. parent IS the head) MUST NOT trigger a new collision-coalesce.
+
+    The cisplatine/Cisplatine D43 pattern: lowercase has its own definitions
+    AND points to capitalized as a variant. The `& Cisplatine` synonym under
+    `@ cisplatine` (its OWN preamble's reverse-variant pointer) shares case-fold
+    `cisplatine` with `@ Cisplatine` (a separate head). Filter condition (c)
+    rejects when parent == head: target=cisplatine == head=cisplatine.
+    The existing D37/F18 + D43 @<->@ coalesce path handles this; M14 must not
+    over-trigger and double-coalesce.
+    """
+    en_data = {
+        "cisplatine": {
+            "definitions": {"Noun": ["a cancer drug"]},
+            "variants": ["Cisplatine"],
+        },
+        "Cisplatine": {"definitions": {"Proper Noun": ["a region"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df], merged, form_locales=["en"])
+    content = merged.read_text(encoding="utf-8")
+
+    # D37/F18 behaviour: single @ cisplatine canonical with both bodies stacked.
+    assert content.count("@ cisplatine\n") == 1
+    assert "@ Cisplatine\n" not in content
+    assert "& Cisplatine" in content
+    assert "a cancer drug" in content
+    assert "a region" in content
+    assert "(Capitalized: Cisplatine)" in content
+    # M14 must NOT have synthesized a SECOND `@ cisplatine` or anything weird.
+    headwords = [line[2:] for line in content.splitlines() if line.startswith("@ ")]
+    assert headwords == ["cisplatine"], headwords
+
+
+def test_merge_dfs_m14_three_way_at_at_amp(tmp_path: Path) -> None:
+    """M14 (D44) — composition with D37/F18: @+@+& on the same case-fold.
+
+    `@ act` (verb) + `& acts → act` (its synonym) + `@ Acts` (Bible) + `@ ACTS`
+    (an acronym, ALL-CAPS). Case-fold "acts" has 2 heads {Acts, ACTS} and 1 syn
+    (acts → act). Post-M14:
+    - @ act stays clean.
+    - @ acts (NEW lowercase canonical) coalesces act's body + Acts annotated +
+      ACTS annotated.
+    - & Acts and & ACTS both appear under @ acts.
+    - No @ Acts or @ ACTS standalone.
+    """
+    en_data = {
+        "act": {"definitions": {"Verb": ["to do something"]}},
+        "acts": {"variants": ["act"]},
+        "Acts": {"definitions": {"Proper Noun": ["a book of the Bible"]}},
+        "ACTS": {"definitions": {"Noun": ["an acronym"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df], merged, form_locales=["en"])
+    content = merged.read_text(encoding="utf-8")
+
+    headwords = [line[2:] for line in content.splitlines() if line.startswith("@ ")]
+    assert headwords == ["act", "acts"], headwords
+
+    act_at = content.index("@ act\n")
+    acts_at = content.index("@ acts\n")
+    act_block = content[act_at:acts_at]
+    assert "& acts" not in act_block, "& acts should be dropped from @ act"
+    assert "Bible" not in act_block
+    assert "acronym" not in act_block
+
+    acts_block = content[acts_at:]
+    assert "& Acts" in acts_block
+    assert "& ACTS" in acts_block
+    assert "to do something" in acts_block  # inherited from act
+    assert "a book of the Bible" in acts_block
+    assert "an acronym" in acts_block
+    assert "(Capitalized: Acts)" in acts_block
+    assert "(Capitalized: ACTS)" in acts_block
+
+
+def test_merge_dfs_m14_existing_lowercase_head_extended_not_replaced(tmp_path: Path) -> None:
+    """M14 (D44) — when the canonical (lowercase) is ALREADY an @ headword
+    with its own body, the collision-coalesce extends that existing entry
+    rather than synthesizing a new one. Avoids duplicate `@ foo` lines.
+
+    Scenario: stelae IS an English headword with its own body (Noun: the
+    archaeological plural) + Stelae (la) is the Latin Proper Noun.
+    Post-fix: @ stelae has its OWN body + separator + Stelae's body annotated.
+    """
+    en_data = {
+        "stelae": {"definitions": {"Noun": ["plural form; archaeology"]}},
+    }
+    la_data = {
+        "Stelae": {"definitions": {"Proper Noun": ["a city of Crete"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    la_df = _write_fixture(tmp_path, "la.df", la_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df, la_df], merged, form_locales=["en", "la"])
+    content = merged.read_text(encoding="utf-8")
+
+    headwords = [line[2:] for line in content.splitlines() if line.startswith("@ ")]
+    assert headwords == ["stelae"], headwords
+    assert content.count("@ stelae\n") == 1
+    assert "& Stelae" in content
+    assert "plural form; archaeology" in content
+    assert "Crete" in content
+    assert "<h3>* * *</h3>" in content
+    assert "(Capitalized: Stelae)" in content
+
+
+def test_merge_dfs_m14_post_fix_corpus_has_zero_syn_head_collisions(tmp_path: Path) -> None:
+    """M14-AC6 (D44, 2026-05-11) — invariant: a merge_dfs output never contains
+    a residual ``@``↔``&`` case-fold collision per the M14 filter.
+
+    Sweep methodology: scan the merged .df; for each case-fold key, identify
+    case-folds where (a) ≥1 ``@`` and ≥1 ``&`` share the fold, (b) the
+    synonym's name differs from at least one head's case, (c) the synonym's
+    parent is not the colliding head. After M14 coalesce, this set MUST be
+    empty.
+
+    This is the structural-invariant analog of M14-AC6 — the corpus-wide
+    AC6 (re-run the sweep against the rebuilt 55-form corpus, assert zero)
+    is exercised manually post-AC11 rebuild. This test exercises the
+    invariant on a small fixture so any regression on the merge logic is
+    caught in the always-on suite without depending on the corpus state.
+    """
+    from collections import defaultdict
+
+    # Build a fixture that EXERCISES every M14 collision pattern we know:
+    # - cross-locale (stelae) — synthesized canonical
+    # - within-locale (cooks) — synthesized canonical
+    # - canonical-already-exists (buddha-style) — extend existing
+    # - three-way @ + @ + & — composition with D37/F18
+    en_data = {
+        "stela": {"definitions": {"Noun": ["upright stone pillar"]}},
+        "stelae": {"variants": ["stela"]},
+        "cook": {"definitions": {"Verb": ["to prepare food"]}},
+        "cooks": {"variants": ["cook"]},
+        "Cooks": {"definitions": {"Proper Noun": ["a surname"]}},
+        "act": {"definitions": {"Verb": ["to do something"]}},
+        "acts": {"variants": ["act"]},
+        "Acts": {"definitions": {"Proper Noun": ["a book of the Bible"]}},
+        "ACTS": {"definitions": {"Noun": ["an acronym"]}},
+        # buddha-style: @ buddha + @ Buddha + & buddha → bujjhati
+        "buddha": {"definitions": {"Noun": ["awakened one"]}, "variants": ["bujjhati"]},
+        "Buddha": {"definitions": {"Proper Noun": ["the historical Buddha"]}},
+        "bujjhati": {"definitions": {"Verb": ["to awaken"]}},
+    }
+    la_data = {
+        "Stelae": {"definitions": {"Proper Noun": ["a city of Crete"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    la_df = _write_fixture(tmp_path, "la.df", la_data)
+    merged = tmp_path / "merged.df"
+    merge_dfs([en_df, la_df], merged, form_locales=["en", "la"])
+
+    # Re-run the sweep methodology on the merged output.
+    heads_by_fold: dict[str, list[str]] = defaultdict(list)
+    syns_by_fold: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    cur_head: str | None = None
+    with merged.open("rb") as f:
+        for raw in f:
+            if raw.startswith(b"@ "):
+                cur_head = raw[2:].rstrip(b"\n").decode("utf-8", "replace")
+                heads_by_fold[cur_head.lower()].append(cur_head)
+            elif raw.startswith(b"& ") and cur_head is not None:
+                s = raw[2:].rstrip(b"\n").decode("utf-8", "replace")
+                syns_by_fold[s.lower()].append((s, cur_head))
+
+    residual: list[tuple[str, list[str], list[tuple[str, str]]]] = []
+    for fold in set(heads_by_fold) & set(syns_by_fold):
+        heads = heads_by_fold[fold]
+        head_set = set(heads)
+        bad: list[tuple[str, str]] = []
+        for s, t in syns_by_fold[fold]:
+            for h in head_set:
+                if h != s and t != h:
+                    bad.append((s, t))
+                    break
+        if bad:
+            residual.append((fold, heads, bad))
+
+    assert not residual, (
+        f"M14-AC6 invariant violated: {len(residual)} residual @<->& "
+        "case-fold collisions in merged .df after M14 coalesce. Examples:\n"
+        + "\n".join(
+            f"  fold={fold!r}: @={heads}, &={bad}"
+            for fold, heads, bad in residual[:10]
+        )
+    )
+
+
+@sdcv_required
+def test_sdcv_lookup_of_m14_collision_returns_both_bodies(tmp_path: Path) -> None:
+    """M14-AC5 (D44, 2026-05-11) — external-consumer oracle for the M14 fix.
+
+    Builds a small fixture StarDict containing the exact stelae/Stelae collision
+    pattern (cross-locale @<->& case-fold conflict), then shells out to sdcv to
+    look up ``stelae`` (lowercase). Pre-fix, the lookup would return ONLY the
+    Latin Proper Noun body (the case-distinct @ Stelae). Post-fix (A1), the
+    lookup must return BOTH stela's archaeology body AND Stelae's Latin
+    Proper Noun body, in that order.
+
+    Closes the M6 oracle gap that hid M14 in the same way it hid F17 — the
+    self-consistency unit tests authored alongside the writer pass even when
+    the .syn/.idx lookup-priority semantics are wrong. The sdcv shell-out
+    drives the real client-side behaviour the user's deployed devices exhibit.
+    """
+    from engrish.stardict_writer import convert_df_to_stardict
+
+    # Fixtures: en has stela (Noun) + stelae (variant-only redirect to stela);
+    # la has Stelae (Latin Proper Noun).
+    en_data = {
+        "stela": {"definitions": {"Noun": ["upright stone pillar"]}},
+        "stelae": {"variants": ["stela"]},
+    }
+    la_data = {
+        "Stelae": {"definitions": {"Proper Noun": ["a city of Crete"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    la_df = _write_fixture(tmp_path, "la.df", la_data)
+    merged = tmp_path / "fixture.df"
+    merge_dfs([en_df, la_df], merged, form_locales=["en", "la"])
+
+    # Build StarDict via the production writer.
+    out_dir = tmp_path / "fixture-stardict"
+    out_dir.mkdir()
+    convert_df_to_stardict(
+        df_src=merged,
+        out_folder=out_dir,
+        title="M14-fixture",
+        date="20260511",
+        dict_name="fixture-en-20260511",
+    )
+
+    # Sanity: the StarDict .idx contains @ stelae (the synthesized canonical).
+    ifo_text = (out_dir / "fixture-en-20260511.ifo").read_text(encoding="utf-8")
+    assert "wordcount=" in ifo_text
+
+    # sdcv lookup of "stelae" (lowercase) must surface both bodies.
+    response = sdcv_lookup("stelae", out_dir)
+    assert response.strip(), f"sdcv returned empty for 'stelae': {response!r}"
+    # A1: lowercase canonical's body (singular's content) comes first; the
+    # capitalized variant's body follows after the separator.
+    assert "upright stone pillar" in response, (
+        f"sdcv lookup of 'stelae' missing stela's body. Response:\n{response}"
+    )
+    assert "Crete" in response, (
+        f"sdcv lookup of 'stelae' missing Stelae's Latin body. Response:\n{response}"
+    )
+    # Order: stela's body first, then separator, then Latin city.
+    pillar_pos = response.index("upright stone pillar")
+    crete_pos = response.index("Crete")
+    assert pillar_pos < crete_pos, (
+        f"order wrong: pillar at {pillar_pos}, crete at {crete_pos}\nresponse:\n{response}"
+    )
+
+    # A1 invariant: looking up "stela" (singular) MUST stay clean — no Crete.
+    response_singular = sdcv_lookup("stela", out_dir)
+    assert "upright stone pillar" in response_singular
+    assert "Crete" not in response_singular, (
+        "A1 invariant violated: lookup of 'stela' (singular) leaked the Latin "
+        f"Proper Noun body. Response:\n{response_singular}"
+    )
+
+
+def test_merge_dfs_m14_byte_deterministic(tmp_path: Path) -> None:
+    """M14 (D44) — collision-coalesce preserves byte-determinism (Δ3 leg)."""
+    en_data = {
+        "stela": {"definitions": {"Noun": ["upright stone pillar"]}},
+        "stelae": {"variants": ["stela"]},
+        "act": {"definitions": {"Verb": ["to do"]}},
+        "acts": {"variants": ["act"]},
+    }
+    la_data = {
+        "Stelae": {"definitions": {"Proper Noun": ["a city of Crete"]}},
+        "Acts": {"definitions": {"Proper Noun": ["a book"]}},
+    }
+    en_df = _write_fixture(tmp_path, "en.df", en_data)
+    la_df = _write_fixture(tmp_path, "la.df", la_data)
+    out1 = tmp_path / "m1.df"
+    out2 = tmp_path / "m2.df"
+    merge_dfs([en_df, la_df], out1, form_locales=["en", "la"])
+    merge_dfs([en_df, la_df], out2, form_locales=["en", "la"])
+    assert out1.read_bytes() == out2.read_bytes()
+
+
 def test_merge_dfs_byte_deterministic(tmp_path: Path) -> None:
     en_data = {"a": {"definitions": {"Noun": ["x"]}}, "b": {"variants": ["c"]}}
     fr_data = {"b": {"definitions": {"Noun": ["y"]}}, "d": {"definitions": {"Noun": ["z"]}}}

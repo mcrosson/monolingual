@@ -22,6 +22,24 @@ StarDict's ``.syn`` mechanism. This eliminates the case-insensitive client
 ambiguity where uppercase Proper-Noun homonyms (e.g. ``Duck``) clobbered
 common-word lookups (e.g. ``duck``).
 
+**Synonym-headword case-collision coalescing (D44, M14 — added 2026-05-11):**
+extends D37/F18 to the sibling case where a ``@ Headword`` shares a case-fold
+with a ``& synonym`` line living inside a *different* ``@ entry``'s preamble.
+The user-reported example: ``& stelae`` (synonym of ``@ stela``, English
+"plural of stela") collided with ``@ Stelae`` (Latin Proper Noun "city of
+Crete"); client-side case-insensitive ``.idx`` lookup returned the Latin
+Proper Noun and the synonym redirect was ignored. Per D44 Option A1, when
+this collision is detected the merger synthesizes a new lowercase canonical
+``@ <synonym>`` entry whose body stacks ``[parent's body, separator,
+colliding-@'s body annotated]``. The original parent ``@`` keeps its body
+unchanged (A1 invariant — singular form stays clean). The colliding ``@`` is
+demoted: no standalone entry, only an ``& <Headword>`` synonym under the new
+canonical. The ``& <synonym>`` line is dropped from the parent's preamble
+(superseded by the new canonical). Implemented via a pre-pass that indexes
+all sources' ``@`` heads + ``&`` synonyms, builds a collision plan, then
+injects synthetic batch entries during the main merge so the existing
+``_merge_case_fold_group`` machinery handles the coalescing uniformly.
+
 Algorithm: k-way merge via ``heapq`` over
 ``(case_fold, headword, source_index)`` tuples — case-fold primary, byte-wise
 tiebreak. Each source is a generator of ``(headword, entry_bytes)`` from
@@ -38,6 +56,7 @@ from __future__ import annotations
 import heapq
 import logging
 import re
+from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -109,11 +128,18 @@ def _pick_canonical(headwords: set[str]) -> str:
 def _merge_case_fold_group(
     entries: list[tuple[int, str, bytes]],
     form_locales: list[str],
+    dropped_syns_for_parent: dict[str, set[str]] | None = None,
 ) -> bytes:
     """Coalesce all entries sharing a case-fold key into one merged entry.
 
     ``entries`` is a list of ``(src_idx, headword, entry_bytes)``; all entries
     must share the same ``headword.lower()`` value (the case-fold key).
+
+    ``dropped_syns_for_parent`` (D44 / M14): optional ``{parent_hw: {syn_name,
+    ...}}`` filter. When emitting an entry whose headword is in this map, any
+    ``& <syn_name>`` line in its preamble whose ``syn_name`` is in the filter
+    set is dropped (superseded by a newly-synthesized lowercase canonical
+    elsewhere in the merged output).
 
     Preamble:
     - ``@ <canonical>`` line.
@@ -136,6 +162,8 @@ def _merge_case_fold_group(
     if not entries:
         raise ValueError("_merge_case_fold_group called with empty entries")
 
+    drop_map = dropped_syns_for_parent or {}
+
     distinct_hws = {hw for _, hw, _ in entries}
     canonical = _pick_canonical(distinct_hws)
 
@@ -156,12 +184,22 @@ def _merge_case_fold_group(
     # first contributing locale.
     for idx, hw, eb in canonical_sorted + other_sorted:
         pre, _ = _split_entry(eb)
+        # D44 / M14: per-parent dropped-synonym filter. The collision pre-pass
+        # may have marked some `&` lines in this entry's preamble as superseded
+        # by a synthesized canonical living at a different case-fold; skip them.
+        dropped_for_this = drop_map.get(hw, frozenset())
         for line in pre:
             if line.startswith(b":"):
                 if pron_line is None and hw == canonical:
                     pron_line = line
             elif line.startswith(b"& "):
                 target_hw = line[2:].rstrip(b"\n").decode("utf-8", errors="replace")
+                # D44: drop & lines that the M14 collision pass marked
+                # superseded (e.g. `& stelae` in `@ stela`'s preamble when a
+                # new `@ stelae` canonical is synthesized for the Stelae
+                # cross-locale collision).
+                if target_hw in dropped_for_this:
+                    continue
                 # Drop any & line that points to a non-canonical case-variant
                 # in this same group — we synthesize fresh aliases for those
                 # below to ensure deterministic, complete coverage.
@@ -221,6 +259,157 @@ def _merge_case_fold_group(
     return merged
 
 
+def _index_sources_for_syn_head_collisions(
+    sources: list[Path],
+) -> tuple[dict[str, list[tuple[int, str]]], dict[str, list[tuple[int, str, str]]]]:
+    """D44 / M14 pre-pass — index every source's ``@`` heads and ``&`` synonyms.
+
+    Returns ``(heads_by_fold, syns_by_fold)`` where:
+    - ``heads_by_fold[fold]`` = list of ``(src_idx, headword)`` for every ``@``
+      whose case-fold key is ``fold``.
+    - ``syns_by_fold[fold]`` = list of ``(src_idx, synonym_name, parent_headword)``
+      for every ``& <synonym_name>`` line under ``@ <parent_headword>`` whose
+      case-fold key is ``fold``.
+
+    Streaming: reads each source via ``iter_entries`` but only inspects each
+    entry's preamble; entry bodies stay on disk. Memory cost ~O(N_headwords *
+    avg_headword_len + N_synonyms * (2 * avg_headword_len)) — for the 12-locale
+    form ~3.5M heads + ~13M synonyms ≈ 250 MB peak. Acceptable within the 8 GB
+    cap.
+    """
+    heads_by_fold: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    syns_by_fold: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
+    for src_idx, src_path in enumerate(sources):
+        for hw, entry_bytes in iter_entries(src_path):
+            heads_by_fold[hw.lower()].append((src_idx, hw))
+            preamble, _ = _split_entry(entry_bytes)
+            for line in preamble:
+                if line.startswith(b"& "):
+                    syn = line[2:].rstrip(b"\n").decode("utf-8", errors="replace")
+                    syns_by_fold[syn.lower()].append((src_idx, syn, hw))
+    return heads_by_fold, syns_by_fold
+
+
+def _build_syn_head_collision_plans(
+    heads_by_fold: dict[str, list[tuple[int, str]]],
+    syns_by_fold: dict[str, list[tuple[int, str, str]]],
+) -> dict[str, dict]:
+    """D44 / M14 — identify case-fold groups where ``@`` heads and ``&``
+    synonyms collide, and build the coalesce plan.
+
+    A fold ``F`` triggers a collision plan when there exists at least one
+    ``& S → T`` synonym at fold ``F`` whose parent ``T`` lives at a *different*
+    case-fold (``T.lower() != F``). The same-fold case (``T.lower() == F``) is
+    a legitimate variant pointer between case-pair entries (e.g. the D43
+    cisplatine pattern); D37/F18's existing ``@``↔``@`` coalesce handles it.
+
+    Returns ``{fold: plan_dict}`` where ``plan_dict`` has:
+
+    - ``canonical`` (str): the lowercase ``@`` headword. Lowercase form
+      preferred from across all heads and synonyms participating in the
+      collision; else lex-smallest by byte order.
+    - ``demoted_heads`` (set[str]): heads in this fold whose case differs from
+      the canonical. They emit no standalone ``@`` entry — they become
+      ``& <head>`` synonyms under the canonical and contribute annotated
+      bodies (via D37/F18's ``_merge_case_fold_group``).
+    - ``dropped_syns_from_parent`` (dict[str, set[str]]): per-parent map of
+      ``&`` lines to drop from that parent's preamble. Includes every syn at
+      this fold whose parent is not the canonical — regardless of the
+      synonym's case. The new ``@ <canonical>`` entry aggregates the bodies
+      and supersedes every same-fold redirect.
+    - ``contributing_parents`` (list[tuple[int, str]]): the ``(src_idx,
+      parent_hw)`` pairs whose bodies stack into the canonical entry's body
+      block. Deterministic order: input source order, then encounter order.
+      Includes every parent referenced by a same-fold synonym (regardless of
+      synonym case) so the user sees every body associated with the canonical's
+      lookup form.
+    - ``canonical_exists_as_head`` (bool): True if the canonical is also an
+      existing ``@`` head in some source. Informational — the merge pass
+      injects synthetic parent-body entries regardless; when the canonical
+      already exists, those bodies stack alongside the real canonical's body.
+    """
+    plans: dict[str, dict] = {}
+    for fold in sorted(set(heads_by_fold) & set(syns_by_fold)):
+        head_items = heads_by_fold[fold]
+        syn_items = syns_by_fold[fold]
+        head_names = {hw for _, hw in head_items}
+
+        # Same-fold variant pointers (parent's case-fold equals this fold) are
+        # the D43 cisplatine pattern — handled by D37/F18 @<->@ coalesce. M14
+        # only covers cross-fold parents.
+        candidate_syns = [(sidx, s, t) for (sidx, s, t) in syn_items
+                          if t.lower() != fold]
+        if not candidate_syns:
+            continue
+
+        # Canonical: lowercase form preferred from across heads and candidate
+        # syn names; else lex-smallest.
+        participants = head_names | {s for _, s, _ in candidate_syns}
+        all_variants = sorted(participants)
+        lc_variants = [v for v in all_variants if v == v.lower()]
+        canonical = lc_variants[0] if lc_variants else all_variants[0]
+
+        canonical_exists_as_head = canonical in head_names
+
+        # Demote every head whose case differs from the canonical.
+        demoted = {hw for hw in head_names if hw != canonical}
+
+        # Drop every & line at this fold whose parent isn't the canonical.
+        # Includes both case-distinct syns (e.g. & Mannes → Mann when canonical
+        # is mannes) AND same-case-as-canonical syns (e.g. & mannes → mann).
+        # The new @ canonical supersedes the redirect; the parent's body is
+        # already stacked into the canonical's body.
+        dropped: dict[str, set[str]] = defaultdict(set)
+        contributing_parents: list[tuple[int, str]] = []
+        seen_parents: set[str] = set()
+        for (sidx, s, t) in candidate_syns:
+            if t == canonical:
+                continue
+            dropped[t].add(s)
+            if t not in seen_parents:
+                contributing_parents.append((sidx, t))
+                seen_parents.add(t)
+
+        plans[fold] = {
+            "canonical": canonical,
+            "demoted_heads": demoted,
+            "dropped_syns_from_parent": {k: set(v) for k, v in dropped.items()},
+            "contributing_parents": contributing_parents,
+            "canonical_exists_as_head": canonical_exists_as_head,
+        }
+    return plans
+
+
+def _collect_parent_bodies(
+    sources: list[Path],
+    needed_parents: set[tuple[int, str]],
+) -> dict[tuple[int, str], bytes]:
+    """D44 / M14 — second selective pass: fetch body bytes for parents whose
+    bodies need to be stacked into a synthesized canonical entry.
+
+    Only the bodies for ``needed_parents`` are loaded; everything else is
+    streamed past. Returns ``{(src_idx, parent_hw): body_bytes}``.
+    """
+    parent_bodies: dict[tuple[int, str], bytes] = {}
+    if not needed_parents:
+        return parent_bodies
+    per_src: dict[int, set[str]] = defaultdict(set)
+    for sidx, hw in needed_parents:
+        per_src[sidx].add(hw)
+    for src_idx, src_path in enumerate(sources):
+        wanted = per_src.get(src_idx)
+        if not wanted:
+            continue
+        for hw, entry_bytes in iter_entries(src_path):
+            if hw in wanted:
+                _, body = _split_entry(entry_bytes)
+                parent_bodies[(src_idx, hw)] = body
+                wanted.discard(hw)
+                if not wanted:
+                    break
+    return parent_bodies
+
+
 def _merge_entries(
     sources: list[tuple[int, bytes]],
     form_locales: list[str],
@@ -258,6 +447,11 @@ def merge_dfs(
     tiebreak. Per-locale ``.df`` files MUST be written with the matching
     sort key (``engrish.df_writer.write_df`` does this since 2026-05-04).
 
+    D44 / M14 (2026-05-11): pre-pass identifies ``@``↔``&`` case-fold
+    collisions and builds a plan; the main merge loop injects synthetic
+    entries (for synthesized canonicals) and filters dropped ``&`` lines from
+    affected parents.
+
     Returns ``(merged_headword_count, contributing_source_entry_count)``.
     """
     if len(sources) != len(form_locales):
@@ -267,6 +461,42 @@ def merge_dfs(
 
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    # === D44 / M14 pre-pass: index sources for @<->& collision detection ===
+    heads_by_fold, syns_by_fold = _index_sources_for_syn_head_collisions(sources)
+    plans = _build_syn_head_collision_plans(heads_by_fold, syns_by_fold)
+
+    # Collect (src_idx, parent_hw) pairs whose bodies we need to inject as
+    # synthetic canonical bodies. Includes every contributing parent for
+    # every plan (regardless of whether the canonical already exists as a
+    # head — when it does, the synthetic bodies stack alongside the real
+    # canonical's body in the merge output).
+    needed_parents: set[tuple[int, str]] = set()
+    for plan in plans.values():
+        needed_parents.update(plan["contributing_parents"])
+    parent_bodies = _collect_parent_bodies(sources, needed_parents)
+
+    # Pre-compute per-fold synthetic batch additions and the global
+    # dropped-syns filter passed to _merge_case_fold_group.
+    synthetic_for_fold: dict[str, list[tuple[int, str, bytes]]] = {}
+    dropped_syns_for_parent: dict[str, set[str]] = defaultdict(set)
+    for fold, plan in plans.items():
+        canonical = plan["canonical"]
+        for parent_hw, syn_names in plan["dropped_syns_from_parent"].items():
+            dropped_syns_for_parent[parent_hw].update(syn_names)
+        # Synthesize a virtual @ <canonical> entry per contributing parent.
+        # Each carries the parent's body verbatim (h3 unchanged — A1 invariant
+        # says the parent's body content is what surfaces under the new
+        # canonical for the singular/common reading).
+        for sidx, parent_hw in plan["contributing_parents"]:
+            body = parent_bodies.get((sidx, parent_hw))
+            if body is None:
+                continue
+            virtual_bytes = f"@ {canonical}\n".encode("utf-8") + body
+            synthetic_for_fold.setdefault(fold, []).append(
+                (sidx, canonical, virtual_bytes)
+            )
+
+    # === Main merge pass ===
     iters: list[Iterator[tuple[str, bytes]]] = [iter_entries(path) for path in sources]
     heap: list[tuple[str, str, int, tuple[str, bytes]]] = []
     for src_idx, it in enumerate(iters):
@@ -294,7 +524,15 @@ def merge_dfs(
                 except StopIteration:
                     pass
 
-            merged_bytes = _merge_case_fold_group(batch, form_locales)
+            # D44 / M14: inject synthetic canonical entries for this fold.
+            if case_fold in synthetic_for_fold:
+                batch.extend(synthetic_for_fold[case_fold])
+
+            merged_bytes = _merge_case_fold_group(
+                batch,
+                form_locales,
+                dropped_syns_for_parent=dropped_syns_for_parent,
+            )
             out_fh.write(merged_bytes)
             merged_count += 1
 
