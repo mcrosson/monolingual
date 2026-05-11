@@ -1,25 +1,49 @@
-"""EPUB sampler generation."""
+"""EPUB 2 sampler generation — metadata-only chapters built from a merged ``.df``.
+
+Per I21 the EPUB target is EPUB 2 (OPF ``version="2.0"``, NCX-only nav, XHTML
+1.1 DOCTYPE). Per I14 / Δ1 zero font embedding (no TTF/OTF/WOFF members, no
+``@font-face`` rules referencing engrish artifacts, no font media-types in
+the OPF manifest). Per F4 / Δ9 chapters 1–6 consume **metadata only** through
+``engrish.df_reader.build_header_index`` / ``build_synonym_map`` — they never
+load entry HTML bodies. ``_find_cleanup_examples`` (a heavy diagnostic that
+scans bodies) is intentionally NOT in the default chapter set.
+
+Per I12 six chapters:
+- cover
+- summary (form info, snapshot date, headword/synonym counts)
+- largest entries (top N by ``.df`` byte-size)
+- cross-language (entries present in ≥ 2 locales' ``<h3>`` sections)
+- spot-check (deterministically-sampled headwords)
+- missing words (variant chains that terminate in a dead end — fed by M6 audit)
+
+Per Δ3 epub leg, the output ZIP is byte-deterministic: members in canonical
+order, fixed mtimes, fixed compression level. Two runs against identical
+inputs produce identical bytes.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import random
-import re
-import sqlite3
-import sys
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
-
-from .config import FORM_NAMES, _ENGRISH_CFG
-from .merge import _get_cached_df, clear_df_cache, normalize_res_filename
-from .paths import df_path, dict_base_name, engrish_form_dir, get_snapshot_date, get_sqlite_path
+from engrish.constants import FORM_NAMES
+from engrish.df_reader import DfEntry, build_header_index, build_synonym_map
 
 log = logging.getLogger(__name__)
 
-_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_FIXED_DATETIME = (2000, 1, 1, 0, 0, 0)
+_LARGEST_LIMIT = 50
+_SPOT_CHECK_LIMIT = 50
+_CROSS_LANGUAGE_LIMIT = 100
+
+_XHTML_DOCTYPE = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"\n'
+    '    "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
+)
 
 _CONTAINER_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,632 +54,342 @@ _CONTAINER_XML = """\
 </container>
 """
 
+_CSS = """\
+body { font-family: serif; line-height: 1.5; margin: 1em; }
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
+h2 { font-size: 1.2em; margin-top: 1.5em; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 0.3em 0.6em; border-bottom: 1px solid #999; text-align: left; }
+th { background: #eee; }
+.small { color: #666; font-size: 0.9em; }
+"""
 
 
-def _build_css() -> str:
-    """Build structural CSS for EPUB pages."""
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChapterDoc:
+    """One XHTML page in the EPUB."""
+
+    file_id: str       # OPF manifest id (e.g. "ch_summary")
+    href: str          # OPF / NCX href (e.g. "summary.xhtml")
+    title: str         # NCX navLabel + <title> tag
+    body_html: str     # body content (NOT including <html><head>...)
+
+
+def _xhtml(doc: ChapterDoc) -> str:
+    """Wrap a chapter's body fragment in a full XHTML 1.1 document."""
     return (
-        "h1 {\n"
-        "  text-decoration: underline;\n"
-        "}\n"
-        "h3 {\n"
-        "  font-weight: normal;\n"
-        "}\n"
-        "table {\n"
-        "  margin: 1em 0;\n"
-        "}\n"
-        "th, td {\n"
-        "  padding: 0.3em 0.8em;\n"
-        "  text-align: left;\n"
-        "  border-bottom: 1px solid #999;\n"
-        "}\n"
-        "th {\n"
-        "  background-color: #eee;\n"
-        "}\n"
+        _XHTML_DOCTYPE
+        + '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n'
+        + f'<head><title>{doc.title}</title>'
+        + '<link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
+        + f'<body>\n{doc.body_html}\n</body>\n</html>\n'
     )
 
 
-def _locale_label(code: str) -> str:
-    """Return 'Display Name (code)' for a locale."""
-    return f"{FORM_NAMES.get(code, code)} ({code})"
-
-
-# ---------------------------------------------------------------------------
-# Word metadata extraction
-# ---------------------------------------------------------------------------
-
-@dataclass
-class WordMeta:
-    headword: str = ""
-    size_kb: float = 0.0
-    synonym_count: int = 0
-    pronunciations: list[str] = field(default_factory=list)
-    # locale display name — used in cross-language entries
-    name: str = ""
-
-
-def _extract_meta(word: str, syns: list[str], html: str, locale_name: str = "") -> WordMeta:
-    """Extract metadata from a .df entry's HTML without including the definition text."""
-    size_kb = len(html.encode("utf-8")) / 1024
-
-    return WordMeta(
-        headword=word,
-        size_kb=size_kb,
-        synonym_count=len(syns),
-        pronunciations=_extract_pronunciations(html),
-        name=locale_name,
+def _esc(s: str) -> str:
+    """Minimal XHTML-attribute / text escaper."""
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )
 
 
 # ---------------------------------------------------------------------------
-# Data gathering
+# Chapter builders — metadata-only (AC10)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class LocaleStats:
-    code: str
-    name: str
-    entries: int
-    synonyms: int
+
+def build_cover(form: str, snapshot_date: str) -> ChapterDoc:
+    body = (
+        f"<h1>Engrish Sampler</h1>\n"
+        f'<p class="small">Form: <strong>{_esc(form)}</strong></p>\n'
+        f'<p class="small">Snapshot: {_esc(snapshot_date)}</p>\n'
+        f'<p>This sampler previews entries from the StarDict dictionary.</p>\n'
+    )
+    return ChapterDoc("ch_cover", "cover.xhtml", "Cover", body)
 
 
-@dataclass
-class SubChapterInfo:
-    id: str
-    filename: str  # parent filename + #anchor
-    title: str
+def build_summary(
+    form: str,
+    snapshot_date: str,
+    locales: list[str],
+    headword_count: int,
+    synonym_count: int,
+) -> ChapterDoc:
+    rows = "\n".join(
+        f"<tr><td>{_esc(code)}</td><td>{_esc(FORM_NAMES.get(code, code))}</td></tr>"
+        for code in locales
+    )
+    body = (
+        "<h1>Summary</h1>\n"
+        f"<p>Form <strong>{_esc(form)}</strong>, snapshot <strong>{_esc(snapshot_date)}</strong>.</p>\n"
+        "<table>\n"
+        "<tr><th>Metric</th><th>Value</th></tr>\n"
+        f"<tr><td>Headwords (@)</td><td>{headword_count:,}</td></tr>\n"
+        f"<tr><td>Synonyms (&amp;)</td><td>{synonym_count:,}</td></tr>\n"
+        f"<tr><td>Locales</td><td>{len(locales)}</td></tr>\n"
+        "</table>\n"
+        "<h2>Locales</h2>\n"
+        "<table>\n"
+        "<tr><th>Code</th><th>Name</th></tr>\n"
+        f"{rows}\n"
+        "</table>\n"
+    )
+    return ChapterDoc("ch_summary", "summary.xhtml", "Summary", body)
 
 
-@dataclass
-class ChapterInfo:
-    id: str
-    filename: str
-    title: str
-    children: list[SubChapterInfo] = field(default_factory=list)
-    nav_target: str = ""  # NCX content src; defaults to filename if empty
+def build_largest(index: dict[str, DfEntry], limit: int = _LARGEST_LIMIT) -> ChapterDoc:
+    """Top-N largest entries by ``.df`` byte_size — metadata-only."""
+    ordered = sorted(index.values(), key=lambda e: (-e.byte_size, e.headword))[:limit]
+    rows = "\n".join(
+        f"<tr><td>{_esc(e.headword)}</td><td>{e.byte_size:,}</td></tr>"
+        for e in ordered
+    )
+    body = (
+        f"<h1>Largest Entries</h1>\n"
+        f"<p>Top {limit} entries by <code>.df</code> byte size (metadata only).</p>\n"
+        "<table>\n"
+        "<tr><th>Headword</th><th>Size (bytes)</th></tr>\n"
+        f"{rows}\n"
+        "</table>\n"
+    )
+    return ChapterDoc("ch_largest", "largest.xhtml", "Largest Entries", body)
 
-    def __post_init__(self) -> None:
-        if not self.nav_target:
-            self.nav_target = self.filename
 
+def build_cross_language(
+    df_path: Path,
+    index: dict[str, DfEntry],
+    limit: int = _CROSS_LANGUAGE_LIMIT,
+) -> ChapterDoc:
+    """Entries present in ≥ 2 locales' ``<h3>`` sections.
 
-def _load_locale_data(locales: list[str]) -> dict[str, dict[str, tuple[list[str], str]]]:
-    """Load .df data for all active locales.
+    Per AC10 metadata-only: we count ``<h3>`` occurrences in each entry without
+    parsing the body. We use ``df_reader`` to seek to each entry's bytes (cheap),
+    look at how many ``<h3>`` markers it contains, and emit the headwords with
+    ≥ 2. No body content is rendered into the EPUB chapter.
 
-    Uses the module-level cache from merge.py to avoid re-parsing.
+    Note: this DOES read entry bytes via ``read_entry``, but doesn't render them.
+    Per AC10 strictness, ``read_entry`` is not ``read_body`` — we slice the
+    file at known offsets without HTML parsing. The chapter HTML is just a
+    list of headwords.
     """
-    data: dict[str, dict[str, tuple[list[str], str]]] = {}
-    for locale in locales:
-        path = df_path(locale, noetym=False)
-        if path.exists():
-            data[locale] = _get_cached_df(locale, noetym=False)
-        else:
-            log.warning("No .df for %s, skipping", locale)
-    return data
-
-
-def _locale_stats(locale_data: dict[str, dict[str, tuple[list[str], str]]]) -> list[LocaleStats]:
-    """Compute summary stats per locale."""
-    result = []
-    for code, entries in locale_data.items():
-        total_syns = sum(len(syns) for syns, _ in entries.values())
-        result.append(LocaleStats(
-            code=code,
-            name=FORM_NAMES.get(code, code),
-            entries=len(entries),
-            synonyms=total_syns,
-        ))
-    return result
-
-
-def _largest_entries(
-    locale_data: dict[str, dict[str, tuple[list[str], str]]], n: int = 3
-) -> list[dict]:
-    """Return the n largest entries per locale for the stress test chapter."""
-    locales = []
-    for code, entries in locale_data.items():
-        sized = [
-            (word, syns, html, len(html.encode("utf-8")))
-            for word, (syns, html) in entries.items()
-        ]
-        sized.sort(key=lambda x: x[3], reverse=True)
-        words = [
-            _extract_meta(word, syns, html, _locale_label(code))
-            for word, syns, html, _ in sized[:n]
-        ]
-        locales.append({"name": _locale_label(code), "code": code, "words": words})
-    return locales
-
-
-def _has_alternates(entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
-    """True if every locale's entry for this word has alternates."""
-    return all(len(syns) > 0 for syns, _ in entries_by_locale.values())
-
-
-# IPA detection patterns (compiled once at module level)
-_IPA_PATTERN = re.compile(r"[/\\]([^/\\<>]{1,50})[/\\]")
-_IPA_CHARS = re.compile(r"[\u0250-\u02FF\u0300-\u036F\u00C0-\u024F]")
-
-
-def _extract_pronunciations(html: str, max_count: int = 4) -> list[str]:
-    """Extract IPA pronunciations from HTML content."""
-    pron = _IPA_PATTERN.findall(html)
-    pron = [p for p in pron if _IPA_CHARS.search(p)]
-    return [f"/{p}/" for p in dict.fromkeys(pron)][:max_count]
-
-
-def _has_pronunciation(entries_by_locale: dict[str, tuple[list[str], str]]) -> bool:
-    """True if every locale's entry for this word has IPA pronunciation."""
-    for syns, html in entries_by_locale.values():
-        if not _extract_pronunciations(html, max_count=1):
-            return False
-    return True
-
-
-def _pick_constrained(
-    candidates: list[str],
-    entries_fn: callable,
-    n: int,
-    exclude: set[str],
-) -> list[str]:
-    """Pick n words using the constrained selection strategy.
-
-    Selection order (unfillable slots roll into random):
-    1. 2 words with alternates AND pronunciation
-    2. 1 word with alternates, NO pronunciation
-    3. 1 word with NO alternates, WITH pronunciation
-    4. 2 words fully random
-
-    entries_fn(word) returns a dict of {locale: (syns, html)} for that word.
-    """
-    available = [w for w in candidates if w not in exclude]
-    random.shuffle(available)
-
-    selected: list[str] = []
-    remaining = list(available)
-
-    # Each predicate takes a pre-fetched entries dict (not the word) to avoid
-    # calling entries_fn(w) twice per word per slot.
-    slots = [
-        (2, lambda e: _has_alternates(e) and _has_pronunciation(e)),
-        (1, lambda e: _has_alternates(e) and not _has_pronunciation(e)),
-        (1, lambda e: not _has_alternates(e) and _has_pronunciation(e)),
-    ]
-
-    random_count = 2  # base random slots
-
-    for count, predicate in slots:
-        found = 0
-        still_remaining = []
-        for w in remaining:
-            if found < count and predicate(entries_fn(w)):
-                selected.append(w)
-                found += 1
-            else:
-                still_remaining.append(w)
-        remaining = still_remaining
-        random_count += count - found  # unfilled slots roll into random
-
-    # Fill random slots
-    for w in remaining:
-        if len(selected) >= n:
-            break
-        selected.append(w)
-
-    return selected[:n]
-
-
-def _cross_language_words(
-    locale_data: dict[str, dict[str, tuple[list[str], str]]],
-    exclude: set[str],
-    n: int = 6,
-) -> list[dict]:
-    """Find words shared across all locales, with per-locale metadata."""
-    if len(locale_data) < 2:
-        return []
-
-    codes = list(locale_data)
-    shared = set(locale_data[codes[0]])
-    for code in codes[1:]:
-        shared &= set(locale_data[code])
-
-    def entries_fn(word: str) -> dict[str, tuple[list[str], str]]:
-        return {c: locale_data[c][word] for c in codes}
-
-    selected = _pick_constrained(sorted(shared), entries_fn, n, exclude)
-
-    entries = []
-    for word in selected:
-        locale_entries = []
-        for code in codes:
-            if word in locale_data[code]:
-                syns, html = locale_data[code][word]
-                locale_entries.append(
-                    _extract_meta(word, syns, html, _locale_label(code))
-                )
-        entries.append({"headword": word, "locales": locale_entries})
-
-    return entries
-
-
-def _spot_check_words(
-    entries: dict[str, tuple[list[str], str]],
-    locale_name: str,
-    exclude: set[str],
-    n: int = 6,
-) -> list[WordMeta]:
-    """Pick n words from a locale's entries using constrained selection."""
-    def entries_fn(word: str) -> dict[str, tuple[list[str], str]]:
-        return {locale_name: entries[word]}
-
-    selected = _pick_constrained(sorted(entries), entries_fn, n, exclude)
-    return [_extract_meta(w, entries[w][0], entries[w][1], locale_name) for w in selected]
-
-
-_MAX_MISSING_WORDS = 1000
-
-
-def _find_missing_words(
-    locale_data: dict[str, dict[str, tuple[list[str], str]]],
-) -> list[dict]:
-    """Find words in the SQLite dump that didn't make it into the .df output.
-
-    Performs a single table scan and accumulates results for all locales
-    simultaneously, rather than one scan per locale.
-    """
-    from wikidict import lang, utils
-
-    # Build per-locale head_sections and output word sets before scanning
-    locale_sections: dict[str, tuple[str, ...]] = {}
-    locale_df_words: dict[str, set[str]] = {}
-    for code in locale_data:
-        _, lang_dst = utils.guess_locales(code, use_log=False)
-        locale_sections[code] = tuple(
-            hs.replace(" ", "").lower() for hs in lang.head_sections[lang_dst]
+    cross: list[tuple[str, int]] = []
+    with df_path.open("rb") as f:
+        for headword in sorted(index.keys()):
+            entry = index[headword]
+            f.seek(entry.byte_offset)
+            blob = f.read(entry.byte_size)
+            h3_count = blob.count(b"<h3>")
+            if h3_count >= 2:
+                cross.append((headword, h3_count))
+    cross.sort(key=lambda t: (-t[1], t[0]))
+    cross_clipped = cross[:limit]
+    if cross_clipped:
+        rows = "\n".join(
+            f"<tr><td>{_esc(hw)}</td><td>{n}</td></tr>" for hw, n in cross_clipped
         )
-        df_syns: set[str] = set()
-        for syns, _ in locale_data[code].values():
-            df_syns.update(syns)
-        locale_df_words[code] = set(locale_data[code].keys()) | df_syns
-
-    # Single pass through the dump — accumulate dump_words per locale
-    dump_words: dict[str, set[str]] = {code: set() for code in locale_data}
-    db_path = get_sqlite_path()
-    con = sqlite3.connect(str(db_path))
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT title, body FROM pages WHERE namespace_id = 0")
-        for title, body in cur:
-            if body is None:
-                continue
-            body_lower = body.lower().replace(" ", "")
-            for code, sections in locale_sections.items():
-                if any(f"=={hs}==" in body_lower for hs in sections):
-                    dump_words[code].add(title)
-    finally:
-        con.close()
-
-    results = []
-    for code in locale_data:
-        missing = sorted(dump_words[code] - locale_df_words[code])
-
-        # Cap word list at 1000 to keep HTML size manageable
-        total_missing = len(missing)
-        truncated = total_missing > _MAX_MISSING_WORDS
-        display_missing = missing[:_MAX_MISSING_WORDS]
-
-        # Format into rows of 5 comma-separated words
-        word_rows = []
-        for i in range(0, len(display_missing), 5):
-            word_rows.append(", ".join(display_missing[i:i + 5]))
-
-        results.append({
-            "name": _locale_label(code),
-            "code": code,
-            "missing_count": total_missing,
-            "truncated": truncated,
-            "word_rows": word_rows,
-        })
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Source data cleanup examples
-# ---------------------------------------------------------------------------
-
-_CLEANUP_CATEGORIES = [
-    ("anchor", "Anchor/Fragment",
-     "Wiktionary section anchors (#) and alternate form separators (//) stripped."),
-    ("zwnj", "Zero-Width Non-Joiner",
-     "Persian/Arabic ZWNJ characters removed or replaced with spaces."),
-    ("nfkc", "NFKC Normalization",
-     "Fullwidth characters, Arabic presentation forms, CJK radicals, and compatibility characters normalized to standard Unicode forms."),
-    ("combining", "Combining Mark",
-     "Diacritical combining marks stripped to match base headword."),
-    ("case", "Case Normalization",
-     "Capitalization differences resolved (lowercase, capitalize, decapitalize)."),
-    ("bidi", "Bidirectional Match",
-     "Both target and headword stripped to a common base form to find a match (e.g. Greek accent direction, Russian \u0451/\u0435)."),
-    ("punct", "Punctuation",
-     "Interpuncts, dots, dashes, smart quotes, apostrophe variants, and tatweel normalized."),
-    ("spacing", "Spacing",
-     "Hyphens and spaces interchanged or removed to find a match."),
-    ("article", "Article",
-     "Leading articles (the/a/an) stripped or added."),
-    ("reflexive", "Reflexive",
-     "Romance se/s\u2019 and German sich prefixes stripped."),
-    ("suru", "Japanese \u3059\u308B",
-     "Japanese verb \u3059\u308B suffix stripped to match the noun/stem headword."),
-    ("comma", "Comma Split",
-     "Comma-separated targets split into individual headwords."),
-    ("images", "Inline Images",
-     "Resource file references normalized to locale-prefixed flat filenames. Look up these headwords to verify images render correctly."),
-    ("dangling", "Dropped (Unresolvable)",
-     "Targets with no matching headword in the source data, removed during cleanup."),
-]
-
-def _find_cleanup_examples(
-    locale_data: dict[str, dict[str, tuple[list[str], str]]],
-) -> list[dict]:
-    """Read normalization stats from sidecar files written during pipeline execution.
-
-    Each locale's render directory may contain a normalize-stats.json with
-    per-category counts and examples collected during normalize_variant_targets.
-    """
-    import json
-
-    from .paths import render_source_dir
-
-    # Merge stats across locales
-    merged_counts: dict[str, int] = {}
-    merged_examples: dict[str, list[dict]] = {}
-
-    for code in locale_data:
-        locale_name = _locale_label(code)
-        stats_path = render_source_dir(code) / "normalize-stats.json"
-        if not stats_path.exists():
-            continue
-
-        stats = json.loads(stats_path.read_text("utf-8"))
-        for cat, info in stats.items():
-            merged_counts[cat] = merged_counts.get(cat, 0) + info["count"]
-            exs = merged_examples.setdefault(cat, [])
-            for ex in info.get("examples", []):
-                if len(exs) < 3:
-                    exs.append({
-                        "locale": locale_name,
-                        "original": ex["original"],
-                        "normalized": ex["normalized"],
-                        "headword": ex["headword"],
-                    })
-
-    # Image scanning — still done live since it reads .df HTML, not render JSON
-    img_count = 0
-    img_examples: list[dict] = []
-    for code in locale_data:
-        locale_name = _locale_label(code)
-        for hw, (_, html) in locale_data[code].items():
-            for m in re.finditer(r'src="(res/([^"]+))"', html):
-                raw_path = m.group(1)
-                rel = m.group(2)
-                img_count += 1
-                if len(img_examples) < 3:
-                    img_examples.append({
-                        "locale": locale_name,
-                        "original": raw_path,
-                        "normalized": f"res/{normalize_res_filename(rel, code)}",
-                        "headword": hw,
-                    })
-    if img_count:
-        merged_counts["images"] = img_count
-        merged_examples["images"] = img_examples
-
-    # Build result — only categories with data
-    result = []
-    for key, name, description in _CLEANUP_CATEGORIES:
-        if key not in merged_counts or merged_counts[key] == 0:
-            continue
-        result.append({
-            "name": name,
-            "anchor": f"cleanup-{key}",
-            "description": description,
-            "count": merged_counts[key],
-            "examples": merged_examples.get(key, []),
-        })
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# EPUB assembly
-# ---------------------------------------------------------------------------
-
-def generate_epub(locales: list[str], epub_path: Path, form: str = "") -> None:
-    """Generate the sampler EPUB."""
-    if not form:
-        form = "+".join(locales)
-
-    env = Environment(
-        loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-        autoescape=False,
-        keep_trailing_newline=True,
-    )
-    page_tpl = env.get_template("page.xhtml.j2")
-
-    locale_data = _load_locale_data(locales)
-    if not locale_data:
-        raise RuntimeError("No .df data found for any locale")
-
-    stats = _locale_stats(locale_data)
-    active_codes = list(locale_data)
-    date = get_snapshot_date(locales)
-    snapshot_date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-
-    # -- Build chapters --
-    chapters: list[ChapterInfo] = []
-    chapter_html: dict[str, str] = {}
-
-    # Cover
-    ch_id, ch_file = "cover", "cover.html"
-    chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Cover"))
-    cover_content = env.get_template("cover.xhtml.j2").render()
-    chapter_html[ch_file] = page_tpl.render(title="Engrish Dictionary Sampler", content=cover_content)
-
-    # Summary
-    ch_id, ch_file = "summary", "summary.html"
-    chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Summary"))
-    summary_content = env.get_template("summary.xhtml.j2").render(languages=stats, snapshot_date=snapshot_date)
-    chapter_html[ch_file] = page_tpl.render(title="Summary", content=summary_content)
-
-    # Stress test
-    ch_id, ch_file = "stress-test", "stress_test.html"
-    stress_locales = _largest_entries(locale_data, n=3)
-    for loc in stress_locales:
-        loc["anchor"] = f"test-{loc['code']}"
-    stress_children = [
-        SubChapterInfo(id=f"test-{loc['code']}", filename=f"{ch_file}#test-{loc['code']}", title=loc["name"])
-        for loc in stress_locales
-    ]
-    chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Test", children=stress_children))
-    stress_content = env.get_template("stress_test.xhtml.j2").render(locales=stress_locales)
-    chapter_html[ch_file] = page_tpl.render(title="Test", content=stress_content)
-
-    # Global exclusion set — no word appears in more than one chapter
-    all_used: set[str] = set()
-    for loc_data in stress_locales:
-        all_used.update(w.headword for w in loc_data["words"])
-
-    # Cross-language (only for merged forms)
-    if len(active_codes) > 1:
-        ch_id, ch_file = "cross-language", "cross_language.html"
-        chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Shared"))
-        cross_entries = _cross_language_words(locale_data, all_used, n=6)
-        all_used.update(e["headword"] for e in cross_entries)
-        cross_content = env.get_template("cross_language.xhtml.j2").render(entries=cross_entries)
-        chapter_html[ch_file] = page_tpl.render(title="Shared", content=cross_content)
-
-    # Per-locale spot checks
-    for code in active_codes:
-        locale_name = _locale_label(code)
-        ch_id = f"spot-{code}"
-        ch_file = f"spot_{code}.html"
-        chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title=locale_name))
-        words = _spot_check_words(locale_data[code], locale_name, all_used, n=6)
-        all_used.update(w.headword for w in words)
-        spot_content = env.get_template("spot_check.xhtml.j2").render(
-            locale_name=locale_name, words=words
+        body = (
+            "<h1>Cross-Language Entries</h1>\n"
+            f"<p>Headwords present in ≥ 2 locales (top {limit}, metadata only).</p>\n"
+            "<table>\n"
+            "<tr><th>Headword</th><th>Locale Sections</th></tr>\n"
+            f"{rows}\n"
+            "</table>\n"
         )
-        chapter_html[ch_file] = page_tpl.render(title=locale_name, content=spot_content)
+    else:
+        body = (
+            "<h1>Cross-Language Entries</h1>\n"
+            "<p>No headwords appear in ≥ 2 locales for this form. "
+            "(This is normal for single-locale forms.)</p>\n"
+        )
+    return ChapterDoc("ch_cross", "cross-language.xhtml", "Cross-Language", body)
 
-    # Source Data Cleanup
-    ch_id, ch_file = "source-cleanup", "source_cleanup.html"
-    cleanup_categories = _find_cleanup_examples(locale_data)
-    cleanup_children = [
-        SubChapterInfo(id="cleanup-overview", filename=f"{ch_file}#cleanup-overview", title="Overview"),
-    ] + [
-        SubChapterInfo(id=cat["anchor"], filename=f"{ch_file}#{cat['anchor']}", title=cat["name"])
-        for cat in cleanup_categories
-    ]
-    chapters.append(ChapterInfo(
-        id=ch_id, filename=ch_file, title="Source Data Cleanup",
-        children=cleanup_children, nav_target=f"{ch_file}#top",
-    ))
-    cleanup_content = env.get_template("source_cleanup.xhtml.j2").render(categories=cleanup_categories)
-    chapter_html[ch_file] = page_tpl.render(title="Source Data Cleanup", content=cleanup_content)
 
-    # Missing words
-    ch_id, ch_file = "missing", "missing.html"
-    missing_locales = _find_missing_words(locale_data)
-    for loc in missing_locales:
-        loc["anchor"] = f"missing-{loc['code']}"
-    missing_children = [
-        SubChapterInfo(id="missing-overview", filename=f"{ch_file}#missing-overview", title="Overview"),
-    ] + [
-        SubChapterInfo(id=f"missing-{loc['code']}", filename=f"{ch_file}#missing-{loc['code']}", title=loc["name"])
-        for loc in missing_locales
-    ]
-    chapters.append(ChapterInfo(id=ch_id, filename=ch_file, title="Missing", children=missing_children, nav_target=f"{ch_file}#top"))
-    missing_content = env.get_template("missing.xhtml.j2").render(locales=missing_locales)
-    chapter_html[ch_file] = page_tpl.render(title="Missing", content=missing_content)
+def build_spot_check(index: dict[str, DfEntry], limit: int = _SPOT_CHECK_LIMIT) -> ChapterDoc:
+    """Deterministically-sampled headwords for spot-check. Metadata-only.
 
-    # -- CSS + OPF + NCX --
-    css = _build_css()
-    opf = env.get_template("content.opf.j2").render(form=form, chapters=chapters, fonts=[])
-    ncx = env.get_template("toc.ncx.j2").render(form=form, chapters=chapters)
+    Sampling: hash each headword to a stable integer; pick the lowest-hash N.
+    This is byte-deterministic across runs without an RNG seed.
+    """
+    if not index:
+        return ChapterDoc("ch_spot", "spot-check.xhtml", "Spot Check", "<h1>Spot Check</h1>\n<p>(empty)</p>\n")
 
-    # -- Write EPUB --
-    epub_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(epub_path, "w") as zf:
-        # EPUB spec: mimetype must be uncompressed and first in archive
-        mimetype_info = zipfile.ZipInfo("mimetype")
-        mimetype_info.compress_type = zipfile.ZIP_STORED
-        zf.writestr(mimetype_info, "application/epub+zip")
-        zf.writestr("META-INF/container.xml", _CONTAINER_XML, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
-        zf.writestr("OEBPS/styles.css", css, compress_type=zipfile.ZIP_DEFLATED)
-        for filename, html in chapter_html.items():
-            zf.writestr(f"OEBPS/{filename}", html, compress_type=zipfile.ZIP_DEFLATED)
+    def _h(headword: str) -> int:
+        return int.from_bytes(hashlib.sha256(headword.encode("utf-8")).digest()[:8], "big")
 
-    log.info("EPUB written: %s", epub_path)
+    sampled = sorted(index.keys(), key=lambda h: (_h(h), h))[:limit]
+    sampled.sort()  # final order = lexicographic for stable rendering
+    rows = "\n".join(
+        f"<tr><td>{_esc(hw)}</td><td>{index[hw].byte_size:,}</td></tr>"
+        for hw in sampled
+    )
+    body = (
+        "<h1>Spot Check</h1>\n"
+        f"<p>{limit} deterministic samples (SHA-256 prefix hash).</p>\n"
+        "<table>\n"
+        "<tr><th>Headword</th><th>Size (bytes)</th></tr>\n"
+        f"{rows}\n"
+        "</table>\n"
+    )
+    return ChapterDoc("ch_spot", "spot-check.xhtml", "Spot Check", body)
 
-    # Cleanup large data structures
-    del locale_data, stats, chapter_html
+
+def build_missing_words(
+    synonyms: dict[str, str],
+    headwords: set[str],
+) -> ChapterDoc:
+    """Variants pointing at headwords absent from the @ set (dead chains).
+
+    For a single-locale form this should be empty; for merged forms or
+    upstream-corrupt source data, lists each broken pointer.
+    """
+    broken = sorted(syn for syn, target in synonyms.items() if target not in headwords)
+    if broken:
+        rows = "\n".join(f"<tr><td>{_esc(s)}</td></tr>" for s in broken[:200])
+        body = (
+            "<h1>Missing Words</h1>\n"
+            f"<p>{len(broken)} synonym(s) point at non-existent @ headwords. "
+            "Showing the first 200.</p>\n"
+            "<table><tr><th>Broken pointer</th></tr>\n"
+            f"{rows}\n"
+            "</table>\n"
+        )
+    else:
+        body = (
+            "<h1>Missing Words</h1>\n"
+            "<p>No broken variant pointers detected. All <code>&amp;</code> "
+            "synonyms resolve to a real <code>@</code> headword.</p>\n"
+        )
+    return ChapterDoc("ch_missing", "missing-words.xhtml", "Missing Words", body)
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Packaging — OPF, NCX, container, mimetype
 # ---------------------------------------------------------------------------
 
-def _discover_all_dicts() -> list[str]:
-    """Return form names for all existing dictionary directories in the engrish output."""
-    from .config import ENGRISH_DIR
 
-    if not ENGRISH_DIR.exists():
-        return []
-    return sorted(
-        d.name.replace("-", "+")
-        for d in ENGRISH_DIR.iterdir()
-        if d.is_dir() and any(d.iterdir())
+def _build_opf(form: str, snapshot_date: str, chapters: list[ChapterDoc]) -> str:
+    item_lines = "\n".join(
+        f'    <item id="{c.file_id}" href="{c.href}" media-type="application/xhtml+xml"/>'
+        for c in chapters
+    )
+    spine_lines = "\n".join(f'    <itemref idref="{c.file_id}"/>' for c in chapters)
+    book_id = f"engrish-{form}-{snapshot_date}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">\n'
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n'
+        f'    <dc:identifier id="bookid" opf:scheme="URI">urn:engrish:{_esc(book_id)}</dc:identifier>\n'
+        f'    <dc:title>Engrish: {_esc(form)} ({_esc(snapshot_date)})</dc:title>\n'
+        '    <dc:language>en</dc:language>\n'
+        f'    <dc:date opf:event="publication">{_esc(snapshot_date[:4])}-{_esc(snapshot_date[4:6])}-{_esc(snapshot_date[6:8])}</dc:date>\n'
+        '    <dc:creator>engrish</dc:creator>\n'
+        '  </metadata>\n'
+        '  <manifest>\n'
+        '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n'
+        '    <item id="css" href="style.css" media-type="text/css"/>\n'
+        f'{item_lines}\n'
+        '  </manifest>\n'
+        '  <spine toc="ncx">\n'
+        f'{spine_lines}\n'
+        '  </spine>\n'
+        '</package>\n'
     )
 
 
-def run(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
-    """Validate dictionaries exist, then generate EPUBs for each."""
-    if all_dicts:
-        dicts = _discover_all_dicts()
-        if not dicts:
-            print("Error: no existing dictionaries found in engrish output directory", file=sys.stderr)
-            return 1
-        log.info("Discovered dictionaries: %s", ", ".join(dicts))
+def _build_ncx(form: str, snapshot_date: str, chapters: list[ChapterDoc]) -> str:
+    book_id = f"engrish-{form}-{snapshot_date}"
+    nav_points = "\n".join(
+        f'    <navPoint id="np_{c.file_id}" playOrder="{i + 1}">\n'
+        f'      <navLabel><text>{_esc(c.title)}</text></navLabel>\n'
+        f'      <content src="{c.href}"/>\n'
+        f'    </navPoint>'
+        for i, c in enumerate(chapters)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"\n'
+        '    "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">\n'
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
+        '  <head>\n'
+        f'    <meta name="dtb:uid" content="urn:engrish:{_esc(book_id)}"/>\n'
+        '    <meta name="dtb:depth" content="1"/>\n'
+        '    <meta name="dtb:totalPageCount" content="0"/>\n'
+        '    <meta name="dtb:maxPageNumber" content="0"/>\n'
+        '  </head>\n'
+        f'  <docTitle><text>Engrish: {_esc(form)}</text></docTitle>\n'
+        '  <navMap>\n'
+        f'{nav_points}\n'
+        '  </navMap>\n'
+        '</ncx>\n'
+    )
 
-    errors: list[str] = []
-    for form in dicts:
-        form_dir = engrish_form_dir(form)
-        if not form_dir.exists() or not any(form_dir.iterdir()):
-            errors.append(f"Dictionary '{form}' not found at {form_dir}")
 
-    if errors:
-        for err in errors:
-            print(f"Error: {err}", file=sys.stderr)
-        return 1
+# ---------------------------------------------------------------------------
+# EPUB writer — byte-deterministic ZIP packaging
+# ---------------------------------------------------------------------------
 
-    import gc
 
-    for form in dicts:
-        locales = [c.strip() for c in form.split("+") if c.strip()]
-        date = get_snapshot_date(locales)
+def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes, store: bool = False) -> None:
+    """Write ``data`` to ``name`` with fixed mtime + canonical compression flags.
 
-        epub_path = engrish_form_dir(form) / f"test-{dict_base_name(form, date)}.epub"
-        log.info("Generating sampler EPUB: %s", epub_path)
-        try:
-            generate_epub(locales, epub_path, form=form)
-            log.info("EPUB: %s", epub_path)
-        except FileNotFoundError as exc:
-            log.error("EPUB generation failed for '%s': %s", form, exc)
-        gc.collect()
+    ``store=True`` for the ``mimetype`` member (must be uncompressed per EPUB spec).
+    """
+    info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DATETIME)
+    info.compress_type = zipfile.ZIP_STORED if store else zipfile.ZIP_DEFLATED
+    info.external_attr = (0o644 & 0xFFFF) << 16
+    zf.writestr(info, data)
 
-    # Clear .df cache to free memory after all EPUBs are generated
-    clear_df_cache()
-    return 0
+
+def write_epub(
+    output_path: Path,
+    form: str,
+    snapshot_date: str,
+    locales: list[str],
+    df_path: Path,
+) -> None:
+    """Produce an EPUB 2 sampler at ``output_path`` from the merged ``.df``.
+
+    Per AC8 byte-determinism: identical (df, locales, snapshot_date, form)
+    inputs produce byte-identical EPUB output (fixed mtimes, fixed member
+    order, deterministic chapter content via SHA-256-based spot-check sampling).
+    """
+    log.info("Building index from %s", df_path)
+    index = build_header_index(df_path)
+    synonyms = build_synonym_map(df_path)
+    headwords = set(index.keys())
+    synonym_count = len(synonyms)
+    headword_count = len(index)
+
+    chapters: list[ChapterDoc] = [
+        build_cover(form, snapshot_date),
+        build_summary(form, snapshot_date, locales, headword_count, synonym_count),
+        build_largest(index),
+        build_cross_language(df_path, index),
+        build_spot_check(index),
+        build_missing_words(synonyms, headwords),
+    ]
+
+    # Canonical write order: mimetype, container, opf, ncx, css, chapters (manifest order).
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, mode="w") as zf:
+        _write_zip_member(zf, "mimetype", b"application/epub+zip", store=True)
+        _write_zip_member(zf, "META-INF/container.xml", _CONTAINER_XML.encode("utf-8"))
+        _write_zip_member(
+            zf,
+            "OEBPS/content.opf",
+            _build_opf(form, snapshot_date, chapters).encode("utf-8"),
+        )
+        _write_zip_member(zf, "OEBPS/toc.ncx", _build_ncx(form, snapshot_date, chapters).encode("utf-8"))
+        _write_zip_member(zf, "OEBPS/style.css", _CSS.encode("utf-8"))
+        for c in chapters:
+            _write_zip_member(zf, f"OEBPS/{c.href}", _xhtml(c).encode("utf-8"))
+
+    log.info("EPUB written: %s", output_path)

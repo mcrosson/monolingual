@@ -1,0 +1,53 @@
+{
+  "form": "en+fr+de+es",
+  "host_total_ram_mb": 55900,
+  "measured_at": "2026-04-27T12:34:18",
+  "poll_interval_s": 0.1,
+  "stages": [
+    {
+      "argv": [
+        "./venv/bin/python",
+        "-m",
+        "engrish",
+        "generate",
+        "--form",
+        "en+fr+de+es"
+      ],
+      "rc": 0,
+      "wall_s": 98.756,
+      "peak_rss_kb": 136440,
+      "peak_rss_mb": 133.2,
+      "stage": "generate"
+    },
+    {
+      "argv": [
+        "./venv/bin/python",
+        "-m",
+        "engrish",
+        "epub",
+        "--form",
+        "en+fr+de+es"
+      ],
+      "rc": 0,
+      "wall_s": 15.221,
+      "peak_rss_kb": 1208320,
+      "peak_rss_mb": 1180.0,
+      "stage": "epub"
+    },
+    {
+      "argv": [
+        "./venv/bin/python",
+        "-m",
+        "engrish",
+        "font",
+        "--form",
+        "en+fr+de+es"
+      ],
+      "rc": 0,
+      "wall_s": 100.067,
+      "peak_rss_kb": 236028,
+      "peak_rss_mb": 230.5,
+      "stage": "font"
+    }
+  ]
+}

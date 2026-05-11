@@ -1,0 +1,28 @@
+usage: engrish [-h] [--keep-xml]
+               {prepare,language-stats,add-language,generate,epub,font,update-fonts} ...
+
+Build dictionaries with Modern English definitions from Wiktionary.
+
+positional arguments:
+  {prepare,language-stats,add-language,generate,epub,font,update-fonts}
+    prepare             Download the EN Wiktionary dump (idempotent if
+                        present)
+    language-stats      Per-locale headword/definition/variant counts from the
+                        render JSON
+    add-language        Add one or more languages to engrish.json (config-
+                        only)
+    generate            Generate a merged StarDict dictionary for a
+                        '+'-separated form
+    epub                Generate an EPUB 2 sampler for a '+'-separated form
+    font                Generate 4 minimized TTFs
+                        (Regular/Bold/Italic/BoldItalic) for a form
+    update-fonts        Download missing Noto source fonts referenced in
+                        engrish.json (idempotent)
+
+options:
+  -h, --help            show this help message and exit
+  --keep-xml            Keep the decompressed Wiktionary XML dump after
+                        parsing. Trade-off: ~10 GB disk vs ~3 min re-
+                        decompress on each run. Sets KEEP_XML=1 env var, which
+                        wikidict.parse reads to decide whether to delete
+                        pages-*.xml post-parse.

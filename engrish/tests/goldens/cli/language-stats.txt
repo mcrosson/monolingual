@@ -1,0 +1,6 @@
+usage: engrish language-stats [-h] --locale LOCALE
+
+options:
+  -h, --help       show this help message and exit
+  --locale LOCALE  Locale code. Recurses into render (and prepare) internally
+                   if needed.

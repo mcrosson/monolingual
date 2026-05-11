@@ -1,33 +1,60 @@
-"""engrish.json config loader + schema validation.
+"""engrish.json config loader + schema validation + module-level data.
 
-Backward-compat re-exports from ``engrish.config_legacy`` keep existing callers
-(``engrish.__main___legacy``, ``engrish/paths.py``, ``engrish/epub.py``, etc.)
-working until M11 deletes the legacy tier. New M3+ code imports pure data from
-``engrish.constants`` and validation entry points from here.
+Owns both the runtime configuration constants (loaded once at import time
+from ``engrish/engrish.json``) and the validation helpers (M3-AC4 schema).
 
-Per ``[[task-round-4-execution-plan]]`` M3-AC4.
+The constants block was inlined from the deleted ``engrish/config_legacy.py``
+at M11-AC4 (2026-05-02). Per ``[[task-round-4-execution-plan]]`` M3-AC4.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from engrish.config_legacy import (  # noqa: F401 — backward-compat re-exports
-    ALL_LOCALES,
-    DATA_DIR,
-    ENGRISH_DIR,
-    ENGRISH_JSON_PATH,
-    EPUB_BASE_FONTS,
-    FONTS_DIR,
-    FORM_NAMES,
-    L2_HEADING_PATTERN,
-    SEED_FONTS,
-    _ENGRISH_CFG,
-    _ENGRISH_RAW,
-    _REPO_ROOT,
-)
+# ---------------------------------------------------------------------------
+# Module-level data (was engrish.config_legacy)
+# ---------------------------------------------------------------------------
+
+ENGRISH_JSON_PATH = Path(__file__).parent / "engrish.json"
+
+try:
+    _ENGRISH_RAW: dict = (
+        json.loads(ENGRISH_JSON_PATH.read_text(encoding="utf-8"))
+        if ENGRISH_JSON_PATH.exists()
+        else {}
+    )
+except (json.JSONDecodeError, PermissionError) as e:
+    print(f"Error loading engrish.json: {e}", file=sys.stderr)
+    _ENGRISH_RAW = {}
+
+_ENGRISH_CFG: dict[str, dict[str, str]] = _ENGRISH_RAW.get("languages", {})
+EPUB_BASE_FONTS: list[str] = _ENGRISH_RAW.get("epub_base_fonts", [])
+SEED_FONTS: list[str] = _ENGRISH_RAW.get("seed_fonts", [])
+
+# All known locale codes — driven entirely by the config (immutable)
+ALL_LOCALES: tuple[str, ...] = tuple(_ENGRISH_CFG)
+
+# Human-readable names for each locale
+FORM_NAMES: dict[str, str] = {code: cfg["display_name"] for code, cfg in _ENGRISH_CFG.items()}
+
+# Data directories — use repo root as fallback when CWD not set
+_REPO_ROOT = Path(__file__).parent.parent
+DATA_DIR = Path(os.getenv("CWD") or _REPO_ROOT) / "data"
+ENGRISH_DIR = DATA_DIR / "engrish"
+FONTS_DIR = _REPO_ROOT / "fonts" / "Noto"
+
+# Shared regex patterns
+L2_HEADING_PATTERN = re.compile(r"^==\s*([^=]+?)\s*==\s*$", re.MULTILINE)
+
+
+# ---------------------------------------------------------------------------
+# Validation (M3-AC4)
+# ---------------------------------------------------------------------------
 
 _REQUIRED_TOP_LEVEL_KEYS = frozenset({"languages", "epub_base_fonts", "seed_fonts"})
 _REQUIRED_LANGUAGE_KEYS = frozenset({"wiktionary_section", "display_name", "fonts"})

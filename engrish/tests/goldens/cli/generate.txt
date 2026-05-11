@@ -1,0 +1,6 @@
+usage: engrish generate [-h] --form FORM
+
+options:
+  -h, --help   show this help message and exit
+  --form FORM  '+'-separated locale codes (e.g. 'en+ang+enm'). Recurses
+               through render/parse/prepare.

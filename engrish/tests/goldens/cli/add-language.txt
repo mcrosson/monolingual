@@ -1,0 +1,6 @@
+usage: engrish add-language [-h] (--lang CODE | --all)
+
+options:
+  -h, --help   show this help message and exit
+  --lang CODE  Locale code to add; may be specified multiple times.
+  --all        Add every known language from the Wiktionary dump.

@@ -98,10 +98,37 @@ def _copy_if_mutable(value: Any) -> Any:
     return value
 
 
+def _engrish_worker_init(locale: str) -> None:
+    """Multiprocessing worker initializer patched onto ``wikidict.render.init_worker``.
+
+    **Why this function is module-level in the shim:** ``wikidict.render.main``
+    spawns a ``multiprocessing.Pool`` with ``initializer=init_worker`` (spawn
+    start method). Pickle serializes the initializer by module + qualname.
+    When the worker unpickles, Python imports that module — ``engrish.wikidict_shim``
+    — which transitively imports ``engrish`` (the parent package), triggering
+    ``engrish/__init__.py``'s ``activate()``. By the time the worker actually
+    invokes this function, the shim is installed in the child process and
+    ``LOCALE_ORIGIN`` / ``_ALL_LOCALES`` / aggregates are populated.
+
+    Without this, the worker process starts fresh with no engrish state, so
+    ``guess_locales("<engrish-only-code>")`` returns ``("<code>", "<code>")``
+    and ``setup_modules_db`` looks for the dump in ``data/<code>/`` instead
+    of ``data/en/`` — producing the "No dump found. Run with --download first"
+    spam and 0% progress the user observed 2026-04-23.
+
+    Delegates to the original ``init_worker`` (saved during the child process's
+    own ``_install``).
+    """
+    # Child process has already run `activate()` via engrish package import.
+    # `_saved["render_init_worker"]` holds the pristine wikidict.render.init_worker
+    # captured at install-time in this child.
+    _saved["render_init_worker"](locale)
+
+
 def _install() -> None:
     """Perform all engrish-gated mutations on wikidict. Outermost-enter only."""
     global _saved
-    from wikidict import constants, lang, namespaces, parse
+    from wikidict import constants, lang, namespaces, parse, render as wdrender
     from wikidict.lang import defaults
 
     cfg = _load_engrish_cfg()
@@ -117,6 +144,7 @@ def _install() -> None:
         "lang_aggregates": {a: getattr(lang, a, _MISSING) for a in _LANG_AGGREGATE_ATTRS},
         "case_b_saves": [],  # list of (module_ref, {attr: (had_before, value_before)})
         "parse_process": parse.process,
+        "render_init_worker": wdrender.init_worker,
     }
 
     # --- namespaces: derived engrish locales inherit EN's namespaces. ---
@@ -150,6 +178,10 @@ def _install() -> None:
 
     # --- parse.process monkey-patch: force is_monolingual=True in engrish mode. ---
     parse.process = functools.partial(_saved["parse_process"], force_monolingual=True)
+
+    # --- render.init_worker monkey-patch: propagate shim to spawn workers. ---
+    # See _engrish_worker_init docstring for the pickle-trick rationale.
+    wdrender.init_worker = _engrish_worker_init
 
 
 def _apply_case_b(
@@ -202,7 +234,7 @@ def _build_case_c_module(
 def _uninstall() -> None:
     """Restore every wikidict mutation from the pre-enter snapshot."""
     global _saved
-    from wikidict import constants, lang, namespaces, parse
+    from wikidict import constants, lang, namespaces, parse, render as wdrender
 
     namespaces.namespaces.clear()
     namespaces.namespaces.update(_saved["namespaces"])
@@ -229,6 +261,7 @@ def _uninstall() -> None:
             setattr(lang, attr, value)
 
     parse.process = _saved["parse_process"]
+    wdrender.init_worker = _saved["render_init_worker"]
     _saved = {}
 
 

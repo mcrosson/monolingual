@@ -1,0 +1,6 @@
+usage: engrish font [-h] --form FORM
+
+options:
+  -h, --help   show this help message and exit
+  --form FORM  '+'-separated locale codes. Recurses through
+               generate→merge→df→render if needed.

@@ -1,1043 +1,1044 @@
-"""Font management: download, detect, and generate minimized dictionary fonts."""
+"""Font generation — M8 rewrite (chunked per ``[[task-m8-font-rewrite-chunks]]``).
+
+The pre-M8 ``engrish/font_legacy.py`` was deleted at M11-AC4 (2026-05-02);
+its add-language helpers (parallel SQLite scan + font detection) were
+migrated to ``engrish.stages.add_language_stage`` and its I/O helpers to
+``engrish.font_io``. The generation pipeline below is the M8 rewrite,
+landed in 6 chunks (M8-A through M8-F).
+
+M8-A surface:
+- ``scan_codepoints(df_path)`` — per-style codepoint sets + first-referencing-entry
+  map, walked from a merged ``.df`` via ``engrish.df_reader.iter_entries``
+  (streaming, low-memory).
+- ``source_font_cmap(path)`` / ``union_source_coverage(paths)`` —
+  ``fontTools.ttLib.TTFont``-backed cmap discovery for source fonts.
+- ``coverage_check(scanned, source_union, generated_cmap, dependency_glyphs)``
+  — three-tier check (M8-AC2):
+  1. Tier 1 strict (S ∩ U ⊆ generated): missing → ``BuildError``.
+  2. Tier 2 strict-no-extras with A3 carve-out (generated ⊆ S ∪ dep_glyphs):
+     extras → ``BuildError``.
+  3. Tier 3 warnings (S − U): codepoints used by StarDict but absent from
+     every configured source font; emitted via ``WarningChannel``, NOT
+     a build failure.
+- ``WarningChannel`` — per-codepoint warnings (M8-AC15) to stderr + log file +
+  ``data/engrish/<form>/fonts/coverage_gaps.txt`` build artifact. Format is
+  fixed and diffable: ``U+XXXX <locale>:<headword>`` per line.
+- ``BuildError`` — hard-fail class for tier-1 / tier-2 violations and (in
+  M8-D) glyph-count overflow.
+
+M8-B surface:
+
+M8-C surface:
+
+M8-D surface:
+
+M8-E surface:
+- ``resolve_source_fonts(locales)`` — given the form's locale list, returns the
+  ordered list of source-font paths to feed the subset+merge pipeline. Reads
+  ``engrish.json``'s per-language ``fonts`` field; resolves each stem to the
+  actual file via ``stem_to_path``.
+- ``stem_to_path(stem, fonts_dir)`` — turn ``"NotoSans"`` into the actual
+  ``fonts/Noto/NotoSans[wght].ttf`` (variable-axis preferred, static fallback).
+- ``build_form_fonts(form, locales, df_path, out_dir, log_path)`` — high-level
+  orchestrator: scan codepoints, resolve sources, subset/merge per style-pair,
+  instantiate at 4 weights, set subfamilies, propagate hhea, assert under
+  limits, save deterministic, run coverage check, emit Tier-3 warnings.
+
+- ``assert_under_format_limits(ttfont)`` — pre-save guard against the
+  TrueType / OpenType structural ceilings that silently corrupt at lookup
+  time when exceeded:
+  - ``maxp.numGlyphs < 65535`` (the 16-bit ``GlyphID`` ceiling).
+  - cmap subtables remain in supported encoding ranges.
+  Raises ``BuildError`` with an actionable message on violation.
+- ``save_font_deterministic(ttfont, path)`` — wrap ``TTFont.save`` with
+  fixed ``head.created`` / ``head.modified`` timestamps + canonical table
+  order so two runs produce byte-identical output. fontTools' default save
+  is mostly deterministic in 4.x; this wrapper closes the timestamp gap.
+
+- ``set_subfamily(ttfont, subfamily)`` — write ``name`` table ID 2 across the
+  Mac / Windows / Unicode platform records so every reader (sdcv, KOReader,
+  Crosspoint) sees the same Subfamily label. Per M8-AC4: each of the four
+  generated TTFs must end up with a distinct Subfamily ("Regular", "Bold",
+  "Italic", "Bold Italic"); the legacy code's all-"Regular" fallthrough is
+  rejected.
+- ``propagate_hhea(target, source_paths)`` — read each source's
+  ``hhea.ascent`` / ``hhea.descent`` / ``hhea.lineGap``, aggregate
+  (max ascent, min descent, max lineGap), write to target. Per M8-AC5: no
+  hard-coded 800 / -200 unless inline-justified. Aggregating across sources
+  ensures the merged font's vertical metrics fit every script it carries.
+
+- ``instantiate_variable(source, weight)`` — ``varLib.instancer.instantiateVariableFont``
+  at ``axisLimits={"wght": weight}`` with ``OverlapMode.KEEP_AND_SET_FLAGS``
+  (the documented enum member, not ``overlap=0``).
+- ``subset_for_style_pair(source, codepoints)`` — one ``fontTools.subset.Subsetter``
+  pass per style-pair (Regular+Bold OR Italic+BoldItalic). Increments the
+  module-level ``_SUBSET_CALL_COUNT`` so M8-AC8 can assert exactly two calls
+  per form.
+- ``pairwise_merge(fonts)`` — combine multiple subsetted source fonts into one
+  via repeated pairwise ``fontTools.merge.Merger``. Documented rationale for
+  pairwise (vs flat) merge per M8-AC9.
+- ``reset_subset_counter()`` / ``get_subset_call_count()`` — instrumentation
+  helpers for tests.
+
+Future chunks:
+- M8-C: per-variant ``name`` table + ``hhea`` propagation + axis-clamp removal.
+- M8-D: overflow assertion + byte-determinism.
+- M8-E: CLI + stage orchestrator + ``update-fonts``.
+- M8-F: live integration sweep + per-primitive unit tests.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 import re
-import sqlite3
-import unicodedata
-from concurrent.futures import ProcessPoolExecutor
+import sys
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import requests
-
-from .config import FONTS_DIR, SEED_FONTS, _ENGRISH_CFG
+from engrish.df_reader import iter_entries
 
 log = logging.getLogger(__name__)
 
-# GitHub raw base URLs for font repositories.
-_NOTO_BASE = "https://raw.githubusercontent.com/notofonts/notofonts.github.io/main/fonts"
-_NOTO_API = "https://api.github.com/repos/notofonts/notofonts.github.io/contents/fonts"
-_CJK_BASE = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF"
-_CJK_API = "https://api.github.com/repos/notofonts/noto-cjk/contents/Sans/SubsetOTF"
-_EMOJI_BASE = "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts"
-_EMOJI_API = "https://api.github.com/repos/googlefonts/noto-emoji/contents/fonts"
-_GOOGLE_FONTS_BASE = "https://raw.githubusercontent.com/google/fonts/main/ofl"
-_GOOGLE_FONTS_API = "https://api.github.com/repos/google/fonts/contents/ofl"
+# Style label literals (string-typed for low ceremony; promoted to enum if it pays off later).
+STYLE_REGULAR = "regular"
+STYLE_BOLD = "bold"
+STYLE_ITALIC = "italic"
+STYLE_BOLD_ITALIC = "bold_italic"
+
+ALL_STYLES: tuple[str, ...] = (STYLE_REGULAR, STYLE_BOLD, STYLE_ITALIC, STYLE_BOLD_ITALIC)
 
 
-def _extract_font_stem(filename_stem: str) -> str:
-    """Extract font family stem from filename, preserving style variants.
+class BuildError(Exception):
+    """Hard-fail font build error.
 
-    Examples:
-        NotoSans[wght] -> NotoSans
-        NotoSans-Regular -> NotoSans
-        NotoSans-Italic -> NotoSans-Italic (preserve style)
-        NotoSans-BoldItalic -> NotoSans-BoldItalic (preserve style)
+    Raised on tier-1 / tier-2 coverage violations (M8-AC2), glyph-count overflow
+    (M8-AC3, lands in M8-D), and other hard failures. The build pipeline is
+    expected to abort the form; the user follows up against the message.
     """
-    # Remove variable font weight suffix
-    stem = filename_stem.split("[")[0]
-    parts = stem.split("-")
-    # Preserve style variants (Italic, Bold, BoldItalic)
-    if len(parts) >= 2 and parts[-1] in ("Italic", "Bold", "BoldItalic"):
-        return "-".join(parts[:-1] + [parts[-1]])
-    # For other cases (Regular, etc.), return just the family
-    return parts[0]
 
 
-def _existing_stems(fonts_dir: Path) -> set[str]:
-    """Return the set of font stems already present on disk."""
-    stems: set[str] = set()
-    if fonts_dir.is_dir():
-        for f in fonts_dir.iterdir():
-            if f.suffix in (".ttf", ".otf"):
-                stems.add(_extract_font_stem(f.stem))
-    return stems
+@dataclass(frozen=True)
+class FirstRef:
+    """First StarDict entry that referenced a given codepoint."""
+
+    locale: str   # the entry's <h3>...</h3> label, or "" if absent
+    headword: str
 
 
-def _candidate_urls(stem: str) -> list[tuple[str, str]]:
-    """Return (url, filename) candidates to try, in priority order.
+@dataclass
+class ScannedCodepoints:
+    """Per-style codepoint sets + first-referencing-entry map for one merged ``.df``."""
 
-    Tries all known Noto font repositories generically.  For NotoSans*
-    stems, also tries NotoSerif* as a fallback (some scripts only have
-    Serif variants published).  For a given stem like "NotoSansArabic",
-    the noto-cjk URL will simply 404 and be skipped.
+    per_style: dict[str, set[int]] = field(default_factory=dict)
+    first_ref: dict[int, FirstRef] = field(default_factory=dict)
+
+    @property
+    def all_codepoints(self) -> set[int]:
+        out: set[int] = set()
+        for cps in self.per_style.values():
+            out |= cps
+        return out
+
+
+@dataclass
+class CoverageReport:
+    """Per-tier diagnostics from ``coverage_check``."""
+
+    tier1_missing: set[int] = field(default_factory=set)
+    tier2_extras: set[int] = field(default_factory=set)
+    tier3_warnings: set[int] = field(default_factory=set)
+
+
+# ---------------------------------------------------------------------------
+# Style classification — lightweight HTML walker
+# ---------------------------------------------------------------------------
+
+_TAG_RE = re.compile(r"</?([a-zA-Z]+)[^>]*>")
+
+
+def _classify_text_runs(html: str) -> list[tuple[str, str]]:
+    """Walk ``html`` and return ``(style, text_run)`` pairs.
+
+    Bold = inside ``<b>`` / ``<strong>``. Italic = inside ``<i>`` / ``<em>``.
+    Both nested = bold_italic. Outside any styling tag = regular.
+
+    The walker is intentionally simple — wikidict-rendered HTML uses a small,
+    predictable subset of these tags (Jinja-templated). A full HTML parser
+    would be overkill and slower.
     """
-    suffix = stem.removeprefix("NotoSans").removeprefix("NotoSerif")
-    urls = [
-        # notofonts.github.io — variable weight font
-        (
-            f"{_NOTO_BASE}/{stem}/unhinted/slim-variable-ttf/{stem}%5Bwght%5D.ttf",
-            f"{stem}[wght].ttf",
-        ),
-        # notofonts.github.io — static Regular font
-        (
-            f"{_NOTO_BASE}/{stem}/full/ttf/{stem}-Regular.ttf",
-            f"{stem}-Regular.ttf",
-        ),
-        # noto-cjk — subset OTF (directory name = suffix after NotoSans)
-        (
-            f"{_CJK_BASE}/{suffix}/{stem}-Regular.otf",
-            f"{stem}-Regular.otf",
-        ),
-    ]
-    # Serif fallback: if this is a NotoSans* stem, also try NotoSerif*
-    if stem.startswith("NotoSans"):
-        serif = "NotoSerif" + stem.removeprefix("NotoSans")
-        urls.extend([
-            (
-                f"{_NOTO_BASE}/{serif}/unhinted/slim-variable-ttf/{serif}%5Bwght%5D.ttf",
-                f"{serif}[wght].ttf",
-            ),
-            (
-                f"{_NOTO_BASE}/{serif}/full/ttf/{serif}-Regular.ttf",
-                f"{serif}-Regular.ttf",
-            ),
-        ])
-    # googlefonts/noto-emoji — color emoji font
-    urls.extend([
-        (f"{_EMOJI_BASE}/{stem}-noflags.ttf", f"{stem}-noflags.ttf"),
-        (f"{_EMOJI_BASE}/{stem}.ttf", f"{stem}.ttf"),
-    ])
-    # google/fonts repo (ofl directory) — additional Noto fonts not in notofonts.github.io
-    ofl_name = stem.lower()
-    urls.extend([
-        (
-            f"{_GOOGLE_FONTS_BASE}/{ofl_name}/{stem}%5Bwght%5D.ttf",
-            f"{stem}[wght].ttf",
-        ),
-        (
-            f"{_GOOGLE_FONTS_BASE}/{ofl_name}/{stem}-Regular.ttf",
-            f"{stem}-Regular.ttf",
-        ),
-    ])
-    return urls
+    runs: list[tuple[str, str]] = []
+    bold_depth = 0
+    italic_depth = 0
+    pos = 0
+
+    def _current_style() -> str:
+        b = bold_depth > 0
+        i = italic_depth > 0
+        if b and i:
+            return STYLE_BOLD_ITALIC
+        if b:
+            return STYLE_BOLD
+        if i:
+            return STYLE_ITALIC
+        return STYLE_REGULAR
+
+    for m in _TAG_RE.finditer(html):
+        text = html[pos : m.start()]
+        if text:
+            runs.append((_current_style(), text))
+        tag = m.group(1).lower()
+        is_close = m.group(0).startswith("</")
+        delta = -1 if is_close else 1
+        if tag in ("b", "strong"):
+            bold_depth = max(0, bold_depth + delta)
+        elif tag in ("i", "em"):
+            italic_depth = max(0, italic_depth + delta)
+        pos = m.end()
+    if pos < len(html):
+        runs.append((_current_style(), html[pos:]))
+    return runs
 
 
-def _font_exists_remote(stem: str) -> bool:
-    """Check whether a font for *stem* exists at any known download URL."""
-    for url, _ in _candidate_urls(stem):
-        try:
-            resp = requests.head(url, timeout=10, allow_redirects=True)
-            if resp.status_code == 200:
-                return True
-        except requests.RequestException:
-            pass
-    return False
+def _entry_locale(entry_bytes: bytes) -> str:
+    """Pull the first ``<h3>...</h3>`` label from an entry; "" if absent."""
+    m = re.search(rb"<h3>([^<]+)</h3>", entry_bytes)
+    return m.group(1).decode("utf-8", "replace") if m else ""
 
 
-def _download_font(stem: str, fonts_dir: Path) -> bool:
-    """Try to download a font for *stem*. Returns True on success."""
-    for url, filename in _candidate_urls(stem):
-        log.info("Trying %s", url)
-        try:
-            resp = requests.get(url, timeout=60, stream=True)
-        except requests.RequestException:
+def _entry_html_body(entry_bytes: bytes) -> str:
+    """Slice ``<html>...</html>`` body content out of an entry."""
+    start = entry_bytes.find(b"<html>")
+    end = entry_bytes.find(b"</html>")
+    if start == -1 or end == -1:
+        return ""
+    return entry_bytes[start + len(b"<html>") : end].decode("utf-8", "replace")
+
+
+# ---------------------------------------------------------------------------
+# scan_codepoints — main entry for M8-A
+# ---------------------------------------------------------------------------
+
+
+def scan_codepoints(df_path: Path) -> ScannedCodepoints:
+    """Walk a merged ``.df``; return per-style codepoint sets + first-ref map.
+
+    Headword characters always count as ``regular`` style (the StarDict idx
+    stores them as raw bytes, not styled text). Body text is classified per
+    style via ``_classify_text_runs``. Whitespace is excluded (no font shapes
+    a space; tracking U+0020 across every entry would add noise).
+    """
+    result = ScannedCodepoints(per_style={s: set() for s in ALL_STYLES})
+
+    for headword, entry_bytes in iter_entries(df_path):
+        locale = _entry_locale(entry_bytes)
+
+        for ch in headword:
+            cp = ord(ch)
+            result.per_style[STYLE_REGULAR].add(cp)
+            result.first_ref.setdefault(cp, FirstRef(locale, headword))
+
+        body = _entry_html_body(entry_bytes)
+        if not body:
             continue
-        if resp.status_code == 200:
-            dest = fonts_dir / filename
-            size = 0
-            with dest.open("wb") as fh:
-                for chunk in resp.iter_content(chunk_size=65536):
-                    fh.write(chunk)
-                    size += len(chunk)
-            log.info("Downloaded %s (%d bytes)", dest.name, size)
-            return True
-        log.debug("  %d — %s", resp.status_code, url)
-    return False
 
+        for style, text in _classify_text_runs(body):
+            for ch in text:
+                if ch.isspace():
+                    continue
+                cp = ord(ch)
+                result.per_style[style].add(cp)
+                result.first_ref.setdefault(cp, FirstRef(locale, headword))
 
-# ---------------------------------------------------------------------------
-# Font detection — used by add-language to populate the "fonts" config field
-# ---------------------------------------------------------------------------
-
-_cached_stems: tuple[set[str], set[str]] | None = None
-
-
-def _discover_available_stems() -> tuple[set[str], set[str]]:
-    """Query both Noto font repos for all available font stems.
-
-    Returns ``(all_stems, cjk_stems)`` where *cjk_stems* is the subset
-    that came from the noto-cjk repo (region-based naming that can't be
-    derived from Unicode character names).  Includes both NotoSans and
-    NotoSerif stems since some scripts only have Serif variants.
-
-    Results are cached for the lifetime of the process so that adding
-    multiple languages in one invocation only makes two API calls total.
-    """
-    global _cached_stems
-    if _cached_stems is not None:
-        return _cached_stems
-
-    main_stems: set[str] = set()
-    cjk_stems: set[str] = set()
-    # Main notofonts repo — one directory per font family
-    try:
-        resp = requests.get(_NOTO_API, timeout=15)
-        if resp.status_code == 200:
-            main_stems.update(
-                item["name"]
-                for item in resp.json()
-                if item.get("type") == "dir"
-                and (item["name"].startswith("NotoSans") or item["name"].startswith("NotoSerif"))
-            )
-    except requests.RequestException:
-        log.warning("Could not query notofonts.github.io for font discovery")
-    # CJK repo — one subdirectory per region (JP, SC, etc.)
-    try:
-        resp = requests.get(_CJK_API, timeout=15)
-        if resp.status_code == 200:
-            cjk_stems.update(
-                f"NotoSans{item['name']}"
-                for item in resp.json()
-                if item.get("type") == "dir"
-            )
-    except requests.RequestException:
-        log.warning("Could not query noto-cjk repo for CJK font discovery")
-    # Emoji repo — font files in the fonts/ directory
-    try:
-        resp = requests.get(_EMOJI_API, timeout=15)
-        if resp.status_code == 200:
-            for item in resp.json():
-                if item.get("type") == "file" and item["name"].endswith(".ttf"):
-                    stem = item["name"].split("-")[0].split(".")[0]
-                    if stem.startswith("Noto"):
-                        main_stems.add(stem)
-    except requests.RequestException:
-        log.warning("Could not query noto-emoji repo for emoji font discovery")
-    # google/fonts repo — used as a download fallback in _candidate_urls
-    # but not enumerated here (thousands of non-Noto entries).
-    # Fonts only in google/fonts are found via name-prefix matching
-    # and downloaded through _candidate_urls which includes google/fonts URLs.
-    _cached_stems = (main_stems | cjk_stems, cjk_stems)
-    return _cached_stems
-
-
-# ---------------------------------------------------------------------------
-# Parallel dump scanning
-# ---------------------------------------------------------------------------
-
-def _scan_chunk(
-    db_path: str,
-    targets_lower: list[str],
-    row_lo: int,
-    row_hi: int,
-) -> dict[str, set[str]]:
-    """Worker: scan a rowid range for headword chars across all target languages.
-
-    Each worker opens its own SQLite connection so there is no GIL
-    contention.  Returns ``{section_name_lower: set_of_chars}``.
-    """
-    l2 = re.compile(r"^==\s*([^=]+?)\s*==\s*$", re.MULTILINE)
-    target_set = set(targets_lower)
-    result: dict[str, set[str]] = {t: set() for t in targets_lower}
-    con = sqlite3.connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute(
-            "SELECT title, body FROM pages "
-            "WHERE namespace_id = 0 AND rowid >= ? AND rowid < ?",
-            (row_lo, row_hi),
-        )
-        for title, body in cur:
-            if body is None:
-                continue
-            body_lower = body.lower()
-            # Quick pre-filter: skip page if no target section name appears anywhere.
-            # any() short-circuits on first match — O(1) best case vs O(n_targets)
-            # for a list comprehension, which matters significantly for --all mode.
-            if not any(t in body_lower for t in target_set):
-                continue
-            for m in l2.finditer(body):
-                heading = m.group(1).lower()
-                if heading in target_set:
-                    for ch in title:
-                        if ord(ch) > 127:
-                            result[heading].add(ch)
-    finally:
-        con.close()
     return result
 
 
-def collect_headword_chars_batch(
-    locale_codes: list[str],
-    db_path: Path,
-    *,
-    wiktionary_sections: dict[str, str] | None = None,
-) -> dict[str, set[str]]:
-    """Collect headword chars for one or more languages in a single parallel scan.
+# ---------------------------------------------------------------------------
+# Source-font cmap discovery
+# ---------------------------------------------------------------------------
 
-    *locale_codes* is a list of language codes (e.g. ``["en", "ang", "fr"]``).
-    The wiktionary L2 heading for each code is resolved from the engrish
-    config.  For codes not yet in the config (being added), pass
-    *wiktionary_sections* as a ``{code: section}`` mapping.
 
-    Partitions the dump by rowid range across ``os.cpu_count()`` worker
-    processes, each scanning for all requested languages simultaneously.
-    Returns ``{code: set_of_non_ascii_chars}``.
+def source_font_cmap(font_path: Path) -> set[int]:
+    """Return the codepoints supported by ``font_path`` (via ``getBestCmap``)."""
+    from fontTools.ttLib import TTFont
+
+    ttf = TTFont(str(font_path), lazy=True)
+    try:
+        return set(ttf.getBestCmap().keys())
+    finally:
+        ttf.close()
+
+
+def union_source_coverage(font_paths: Iterable[Path]) -> set[int]:
+    """``U`` = union of all source-font cmaps."""
+    u: set[int] = set()
+    for p in font_paths:
+        u |= source_font_cmap(p)
+    return u
+
+
+# ---------------------------------------------------------------------------
+# Three-tier coverage check (M8-AC2)
+# ---------------------------------------------------------------------------
+
+
+def coverage_check(
+    scanned: ScannedCodepoints,
+    source_union: set[int],
+    generated_cmap: set[int] | None = None,
+    dependency_glyphs: set[int] | None = None,
+) -> CoverageReport:
+    """Three-tier coverage check per ``[[task-round-4-acceptance-criteria]]`` M8-AC2.
+
+    - **Tier 1**: every ``S ∩ U`` codepoint MUST appear in ``generated_cmap``.
+      Missing → ``BuildError``. (We had a source for it but the build dropped
+      it — that's a regression.)
+    - **Tier 2**: ``generated_cmap`` ⊆ ``S ∪ dependency_glyphs``. Extras →
+      ``BuildError``. (The build carries codepoints not in StarDict and not
+      justified as subsetter dependencies.)
+    - **Tier 3**: codepoints in ``S − U`` are emitted as warnings (user must
+      follow up; not a build failure).
+
+    ``generated_cmap`` / ``dependency_glyphs`` may be ``None`` when the build
+    hasn't run yet (e.g., scan-only invocations from CI). In that case only
+    the Tier-3 set is computed; Tier 1 / 2 are skipped without raising.
     """
-    # Resolve wiktionary section headings for each code.
-    sections: dict[str, str] = {}
-    for code in locale_codes:
-        if wiktionary_sections and code in wiktionary_sections:
-            sections[code] = wiktionary_sections[code]
-        elif code in _ENGRISH_CFG:
-            sections[code] = _ENGRISH_CFG[code]["wiktionary_section"]
-        else:
-            raise ValueError(
-                f"Locale '{code}' not in config and no wiktionary_section provided"
+    s = scanned.all_codepoints
+    report = CoverageReport()
+    report.tier3_warnings = s - source_union
+
+    if generated_cmap is not None:
+        s_inter_u = s & source_union
+        report.tier1_missing = s_inter_u - generated_cmap
+        if report.tier1_missing:
+            sample = sorted(report.tier1_missing)[:8]
+            raise BuildError(
+                f"Tier-1 coverage violation: {len(report.tier1_missing)} "
+                f"codepoint(s) in S ∩ U absent from generated cmap. "
+                f"First few: {', '.join(f'U+{cp:04X}' for cp in sample)}"
             )
 
-    targets_lower = [s.lower() for s in sections.values()]
-    code_for_target = {s.lower(): code for code, s in sections.items()}
-    db_str = str(db_path)
+        if dependency_glyphs is None:
+            dependency_glyphs = set()
+        allowed = s | dependency_glyphs
+        report.tier2_extras = generated_cmap - allowed
+        if report.tier2_extras:
+            sample = sorted(report.tier2_extras)[:8]
+            raise BuildError(
+                f"Tier-2 coverage violation: {len(report.tier2_extras)} "
+                f"codepoint(s) in generated cmap outside S ∪ dependency_glyphs. "
+                f"First few: {', '.join(f'U+{cp:04X}' for cp in sample)}"
+            )
 
-    # Determine rowid range for partitioning.
-    con = sqlite3.connect(db_str)
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT MIN(rowid), MAX(rowid) FROM pages WHERE namespace_id = 0")
-        row = cur.fetchone()
-        if row is None or row[0] is None:
-            return {code: set() for code in locale_codes}
-        lo, hi = row
-    finally:
-        con.close()
-
-    # Cap at half of cpu_count: the scan is I/O-bound on the SQLite file and
-    # sees diminishing returns beyond ~4-6 workers while additional processes
-    # increase disk and memory contention.
-    n_workers = max(2, (os.cpu_count() or 4) // 2)
-    chunk_size = (hi - lo + 2) // n_workers
-    chunks = []
-    for i in range(n_workers):
-        c_lo = lo + i * chunk_size
-        c_hi = min(lo + (i + 1) * chunk_size, hi + 1)
-        if c_lo < c_hi:
-            chunks.append((db_str, targets_lower, c_lo, c_hi))
-
-    # Run workers.
-    merged: dict[str, set[str]] = {t: set() for t in targets_lower}
-    with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        try:
-            for partial in pool.map(_scan_chunk, *zip(*chunks)):
-                for t in targets_lower:
-                    merged[t].update(partial[t])
-        except Exception as exc:
-            log.error("Parallel dump scan failed: %s", exc)
-            raise
-
-    # Return keyed by locale code.
-    return {code: merged[sections[code].lower()] for code in locale_codes}
+    return report
 
 
-def _best_stem_for_char(ch: str, confirmed: set[str]) -> str | None:
-    """Return the longest confirmed font stem matching *ch*, or None.
+# ---------------------------------------------------------------------------
+# WarningChannel (M8-AC15)
+# ---------------------------------------------------------------------------
 
-    Tries both NotoSans and NotoSerif prefixes, preferring Sans over Serif
-    at the same prefix length.
+
+class WarningChannel:
+    """Per-codepoint coverage-gap warning emitter.
+
+    M8-AC15 contract:
+    - One warning per codepoint, never aggregated.
+    - Each line: ``U+XXXX <locale>:<headword>`` — fixed, machine-readable, diffable.
+    - Written to stderr (operator visibility), log file (CI capture), and the
+      ``coverage_gaps.txt`` build artifact (long-term diff).
+    - Existence of warnings does NOT block the build; the artifact records
+      the gaps for user follow-up.
+    - The artifact is rewritten unconditionally on every ``emit`` call so two
+      runs with identical inputs produce identical artifact bytes.
     """
-    name = unicodedata.name(ch, None)
-    if not name:
-        return None
-    words = name.split()
-    best: str | None = None
-    best_n = 0
-    for n in range(1, min(5, len(words) + 1)):
-        suffix = "".join(w.title() for w in words[:n])
-        # Prefer Sans over Serif at the same prefix length
-        for prefix in ("NotoSans", "NotoSerif"):
-            stem = prefix + suffix
-            for s in (stem + "s", stem):  # try plural first
-                if s in confirmed and n > best_n:
-                    best = s
-                    best_n = n
-    return best if best and best not in ("NotoSans", "NotoSerif") else None
+
+    def __init__(self, log_path: Path | None, coverage_gaps_path: Path) -> None:
+        self.log_path = log_path
+        self.coverage_gaps_path = coverage_gaps_path
+        self._lines: list[str] = []
+
+    def emit(self, codepoints: Iterable[int], scanned: ScannedCodepoints) -> None:
+        """Emit one warning per codepoint and rewrite the coverage_gaps artifact.
+
+        Both ``log_path`` and ``coverage_gaps.txt`` are rewritten unconditionally
+        (M9-AC1 fix): prior content from earlier runs is discarded so two
+        invocations on identical input produce byte-identical artifacts. Earlier
+        revisions opened ``log_path`` in append mode, which let stale build.log
+        content accumulate across runs and broke determinism.
+        """
+        for cp in sorted(codepoints):
+            ref = scanned.first_ref.get(cp)
+            locale = ref.locale if ref else ""
+            headword = ref.headword if ref else ""
+            line = f"U+{cp:04X} {locale}:{headword}"
+            self._lines.append(line)
+            print(line, file=sys.stderr)
+
+        body = "\n".join(self._lines) + ("\n" if self._lines else "")
+
+        if self.log_path is not None:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_path.write_text(body, encoding="utf-8")
+
+        self.coverage_gaps_path.parent.mkdir(parents=True, exist_ok=True)
+        self.coverage_gaps_path.write_text(body, encoding="utf-8")
 
 
-def _load_cmap(font_path: Path) -> set[int]:
-    """Return the set of codepoints covered by a font file."""
+# ---------------------------------------------------------------------------
+# M8-B: subsetting + variable-font instantiation + pairwise merge
+# ---------------------------------------------------------------------------
+
+# Module-level counter for M8-AC8: per form, we expect exactly 2 calls to
+# ``subset_for_style_pair`` (one for Regular+Bold, one for Italic+BoldItalic).
+_SUBSET_CALL_COUNT: int = 0
+
+
+def reset_subset_counter() -> None:
+    """Reset the subset-call counter (test instrumentation only)."""
+    global _SUBSET_CALL_COUNT
+    _SUBSET_CALL_COUNT = 0
+
+
+def get_subset_call_count() -> int:
+    """Read the current subset-call counter."""
+    return _SUBSET_CALL_COUNT
+
+
+def _subset_one(source, codepoints: set[int]):
+    """Internal: subset a single source font to ``codepoints`` (no counter).
+
+    The counter lives at the form-level orchestration boundary — see
+    ``subset_for_style_pair``.
+    """
+    from fontTools.subset import Options, Subsetter
     from fontTools.ttLib import TTFont
 
-    font = TTFont(font_path)
-    cmap = font.getBestCmap()
-    font.close()
-    return set(cmap) if cmap else set()
+    if isinstance(source, (str, Path)):
+        font = TTFont(str(source))
+    else:
+        font = source
+
+    options = Options()
+    # Retain layout features; let fontTools choose dependency glyphs for
+    # GSUB / combining marks / NFD targets (the A3 carve-out documented
+    # in M8-AC2 Tier-2).
+    options.layout_features = ["*"]
+    options.glyph_names = True
+
+    subsetter = Subsetter(options=options)
+    subsetter.populate(unicodes=sorted(codepoints))
+    subsetter.subset(font)
+    return font
 
 
-def _greedy_set_cover(
-    remaining: set[int],
-    candidates: dict[str, set[int]],
-) -> list[tuple[str, set[int]]]:
-    """Greedy set cover: pick stems from candidates that cover remaining codepoints.
+def subset_for_style_pair(sources, codepoints: set[int]):
+    """Subset every source to ``codepoints`` and return the per-source list.
 
-    At each step picks the stem covering the most remaining codepoints.
-    Returns [(stem, covered_cps), ...] in selection order.
-    Modifies neither remaining nor candidates.
+    Form-level operation: M8-AC8 asks for **exactly two calls per form**
+    (one for Regular+Bold style-pair, one for Italic+BoldItalic). The
+    counter increments once per outer call regardless of how many source
+    fonts the orchestrator passes in.
+
+    **Returns a list, NOT a merged font.** ``fontTools.merge.Merger`` chokes
+    on variable fonts (``VarStore`` has no ``mergeMap``), so the merge has
+    to happen AFTER ``instantiate_variable`` collapses each source to static
+    at its target weight. The orchestrator's per-weight loop calls
+    ``instantiate_and_merge_static`` on this list to produce one TTF per
+    (style-pair × weight) combination.
+
+    ``sources`` is a single path / TTFont OR a list of paths / TTFonts;
+    single values are normalized to a 1-element list. If the result list
+    has one element, ``pairwise_merge`` (called downstream) returns it
+    unchanged — so M8-B's single-source unit tests keep working.
     """
-    pool = dict(candidates)  # local copy so we can pop without affecting caller
-    left = set(remaining)
-    selected: list[tuple[str, set[int]]] = []
-    while left:
-        best_stem: str | None = None
-        best_count = 0
-        best_covered: set[int] = set()
-        for stem, cmap_cps in pool.items():
-            covered = left & cmap_cps
-            if len(covered) > best_count:
-                best_stem = stem
-                best_count = len(covered)
-                best_covered = covered
-        if not best_stem:
-            break
-        pool.pop(best_stem)
-        left -= best_covered
-        selected.append((best_stem, best_covered))
-    return selected
+    global _SUBSET_CALL_COUNT
+    _SUBSET_CALL_COUNT += 1
+
+    if not isinstance(sources, list):
+        sources = [sources]
+    if not sources:
+        raise ValueError("subset_for_style_pair requires at least one source")
+
+    return [_subset_one(src, codepoints) for src in sources]
 
 
-_cached_cmaps: dict[str, set[int]] = {}
+def instantiate_and_merge_static(subsetted_list, weight: int):
+    """Instantiate each subsetted source at ``weight``, then ``pairwise_merge``.
 
-
-def _find_font_file(stem: str, fonts_dir: Path) -> Path | None:
-    """Find the font file for a stem on disk, or None."""
-    if not fonts_dir.is_dir():
-        return None
-    for f in fonts_dir.iterdir():
-        if f.suffix not in (".ttf", ".otf"):
-            continue
-        if f.stem.split("[")[0].split("-")[0] == stem:
-            return f
-    return None
-
-
-def _ensure_font_on_disk(stem: str, fonts_dir: Path) -> Path | None:
-    """Return the path to a font file for *stem*, downloading if needed."""
-    existing = _find_font_file(stem, fonts_dir)
-    if existing:
-        return existing
-    fonts_dir.mkdir(parents=True, exist_ok=True)
-    if _download_font(stem, fonts_dir):
-        return _find_font_file(stem, fonts_dir)
-    return None
-
-
-def _cmap_for_stem(stem: str, fonts_dir: Path) -> set[int]:
-    """Return the cmap for a font stem, loading and caching.
-
-    Downloads the font if it is not already on disk.
+    Splitting this from ``subset_for_style_pair`` is what works around the
+    fontTools merge limitation on variable fonts: by the time we call
+    ``pairwise_merge``, every input has been collapsed to static via
+    ``instantiate_variable``, so ``Merger`` sees no ``VarStore`` tables.
     """
-    if stem in _cached_cmaps:
-        return _cached_cmaps[stem]
-    cmap: set[int] = set()
-    font_path = _ensure_font_on_disk(stem, fonts_dir)
-    if font_path:
-        try:
-            cmap = _load_cmap(font_path)
-        except Exception:
-            log.debug("Could not read cmap from %s", font_path)
-    _cached_cmaps[stem] = cmap
-    return cmap
+    from copy import deepcopy
+
+    instantiated = [instantiate_variable(deepcopy(f), weight=weight) for f in subsetted_list]
+    return pairwise_merge(instantiated)
 
 
-def clear_font_caches() -> None:
-    """Clear all module-level font caches to free memory."""
-    global _cached_stems
-    _cached_cmaps.clear()
-    _cached_stems = None
+def instantiate_variable(source, weight: int):
+    """Instantiate a variable font at the given weight.
 
+    Uses ``OverlapMode.KEEP_AND_SET_FLAGS`` — the documented enum member
+    (per M8-AC6 / 2b #1; the legacy code passed ``overlap=0`` which is the
+    raw enum value but bypasses the documented contract).
 
-def detect_fonts(
-    locale_code: str,
-    db_path: Path,
-    chars: set[str] | None = None,
-    *,
-    wiktionary_section: str | None = None,
-) -> list[str]:
-    """Detect font stems needed for a language.
+    No manual axis clamp is applied (per M8-AC7 / 2b #4); ``instancer``
+    handles axis bounds correctly when the source has a single ``wght``
+    axis. Multi-axis sources would need explicit per-axis limits, which
+    we add in M8-F when integration uncovers the need.
 
-    *locale_code* is the ISO language code (e.g. ``"en"``, ``"ang"``).
-    The wiktionary L2 heading is resolved from the config.  For codes
-    not yet in the config (being added), pass *wiktionary_section*.
-
-    If *chars* is provided (from a prior ``collect_headword_chars_batch``
-    call), uses those directly.  Otherwise performs a full parallel scan.
-
-    Returns exactly the set of validated stems that cover the headword
-    characters — nothing hardcoded, nothing assumed.
-    """
-    if chars is None:
-        ws = {locale_code: wiktionary_section} if wiktionary_section else None
-        chars = collect_headword_chars_batch([locale_code], db_path, wiktionary_sections=ws)[locale_code]
-    if not chars:
-        return []
-
-    log.info("Found %d unique non-ASCII headword characters for %s", len(chars), locale_code)
-
-    # --- Stage 0: seed fonts ---
-    # Download seed fonts if missing.  These are checked first via cmap to
-    # resolve characters (e.g. Latin, Greek, Cyrillic) that can't be mapped
-    # to a script-specific font via name-prefix.
-    if SEED_FONTS:
-        FONTS_DIR.mkdir(parents=True, exist_ok=True)
-        for stem in SEED_FONTS:
-            if not _find_font_file(stem, FONTS_DIR):
-                log.info("Downloading seed font %s...", stem)
-                if not _download_font(stem, FONTS_DIR):
-                    raise RuntimeError(
-                        f"Seed font '{stem}' could not be downloaded. "
-                        f"Check the seed_fonts list in engrish.json."
-                    )
-
-    # Fetch the authoritative set of available font stems (local + remote).
-    remote_available, cjk_stems = _discover_available_stems()
-    available = _existing_stems(FONTS_DIR) | remote_available
-
-    # --- Stage 1: name-prefix → download fonts ---
-    # Build candidate stems from character name prefixes and download any
-    # that are not already on disk.
-    candidates: set[str] = set()
-    for ch in chars:
-        name = unicodedata.name(ch, None)
-        if not name:
-            continue
-        words = name.split()
-        for n in range(1, min(5, len(words) + 1)):
-            suffix = "".join(w.title() for w in words[:n])
-            for prefix in ("NotoSans", "NotoSerif"):
-                candidates.add(prefix + suffix)
-                candidates.add(prefix + suffix + "s")
-
-    to_download = (candidates & available) - _existing_stems(FONTS_DIR)
-    if to_download:
-        log.info("Downloading %d name-matched font(s)...", len(to_download))
-        FONTS_DIR.mkdir(parents=True, exist_ok=True)
-        for stem in sorted(to_download):
-            _download_font(stem, FONTS_DIR)
-
-    # --- Stage 2: cmap-verified greedy set cover ---
-    # Seed fonts first, then candidate fonts, then all other local fonts,
-    # then CJK.  Each round adds new stem cmaps to the pool and continues
-    # the same greedy cover until all characters are matched or no fonts
-    # help.
-    all_cps = {ord(ch) for ch in chars}
-    confirmed = candidates & available
-    stem_cmaps: dict[str, set[int]] = {}
-    result: set[str] = set()
-    remaining_cps = set(all_cps)
-
-    def _load_stems(stems: set[str]) -> None:
-        """Load cmaps for *stems* not already in stem_cmaps."""
-        for stem in stems:
-            if stem not in stem_cmaps:
-                cm = _cmap_for_stem(stem, FONTS_DIR)
-                if cm:
-                    stem_cmaps[stem] = cm
-
-    def _run_cover() -> None:
-        """Run greedy set cover over loaded stem_cmaps, add results to `result`."""
-        nonlocal remaining_cps
-        selected = _greedy_set_cover(remaining_cps, stem_cmaps)
-        for stem, covered in selected:
-            result.add(stem)
-            remaining_cps -= covered
-
-    # Round 1: seed fonts
-    if SEED_FONTS:
-        _load_stems(set(SEED_FONTS))
-        _run_cover()
-
-    # Round 2: candidate fonts (name-prefix matched)
-    if remaining_cps:
-        _load_stems(confirmed)
-        _run_cover()
-
-    # Round 3: all other local fonts
-    if remaining_cps:
-        _load_stems(_existing_stems(FONTS_DIR))
-        _run_cover()
-
-    # Round 4: CJK fonts (download if needed)
-    if remaining_cps and cjk_stems:
-        cjk_to_download = cjk_stems - _existing_stems(FONTS_DIR)
-        if cjk_to_download:
-            log.info("Downloading %d CJK font(s)...", len(cjk_to_download))
-            FONTS_DIR.mkdir(parents=True, exist_ok=True)
-            for stem in sorted(cjk_to_download):
-                _download_font(stem, FONTS_DIR)
-        _load_stems(cjk_stems)
-        _run_cover()
-
-    # --- Stage 4: warn about truly uncovered characters ---
-    unmatched_chars = {ch for ch in chars if ord(ch) in remaining_cps}
-    if unmatched_chars:
-        char_list = "\n".join(
-            f"  U+{ord(ch):04X}  {unicodedata.name(ch, '?')}"
-            for ch in sorted(unmatched_chars)
-        )
-        log.warning(
-            "%d headword character(s) could not be matched to any available "
-            "NotoSans font:\n%s",
-            len(unmatched_chars),
-            char_list,
-        )
-        log.warning(
-            "To add coverage: download the appropriate .ttf/.otf font, place "
-            "it in %s, and add the font stem to the 'fonts' list in the "
-            "config entry for this language.",
-            FONTS_DIR,
-        )
-
-    return sorted(result)
-
-
-# ---------------------------------------------------------------------------
-# update-fonts command
-# ---------------------------------------------------------------------------
-
-def run_update() -> int:
-    """Download any fonts referenced in engrish.json but missing from disk."""
-    needed: set[str] = set(SEED_FONTS)
-    for cfg in _ENGRISH_CFG.values():
-        needed.update(cfg.get("fonts", []))
-
-    if not needed:
-        log.info("No fonts referenced in config")
-        return 0
-
-    FONTS_DIR.mkdir(parents=True, exist_ok=True)
-    present = _existing_stems(FONTS_DIR)
-    missing = sorted(needed - present)
-
-    if not missing:
-        log.info("All %d referenced fonts already present", len(needed))
-        return 0
-
-    log.info("%d font(s) missing: %s", len(missing), ", ".join(missing))
-    failed: list[str] = []
-    for stem in missing:
-        if not _download_font(stem, FONTS_DIR):
-            log.error("Could not download font: %s", stem)
-            failed.append(stem)
-
-    if failed:
-        log.error(
-            "%d font(s) could not be downloaded: %s",
-            len(failed),
-            ", ".join(failed),
-        )
-        return 1
-
-    log.info("All missing fonts downloaded successfully")
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Minimized font generation (subset + merge)
-# ---------------------------------------------------------------------------
-
-
-def collect_codepoints(locales: list[str]) -> set[int]:
-    """Collect all unique codepoints from .df files for the given locales."""
-    from .paths import df_path
-
-    codepoints: set[int] = set()
-    for locale in locales:
-        path = df_path(locale, noetym=False)
-        if not path.exists():
-            log.warning("No .df for %s at %s, skipping", locale, path)
-            continue
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                codepoints.update(ord(ch) for ch in line)
-    return codepoints
-
-
-def _build_font_info(fonts_dir: Path) -> dict[str, tuple[Path, set[int], bool]]:
-    """Open every font in fonts_dir once and return {stem: (path, cmap_cps, has_fvar)}.
-
-    Skips engrish output files and italic variant files (identified by '-Italic' in the name).
-    Skips CBDT-only fonts (no glyf, no CFF tables).
-    Results are used by _select_fonts (twice) and the italic download loop, so each
-    font is opened exactly once per generate_fonts call.
+    If the source is not a variable font (no ``fvar`` table), returns the
+    font as-is — useful for static source fonts like ``NotoSansGothic-Regular``.
     """
     from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+    from fontTools.varLib.instancer import OverlapMode
 
-    info: dict[str, tuple[Path, set[int], bool]] = {}
-    for fpath in sorted(fonts_dir.glob("*")):
-        if fpath.suffix not in (".ttf", ".otf"):
-            continue
-        if fpath.name.startswith("engrish"):
-            continue
-        if "-Italic" in fpath.name:
-            continue
-        stem = fpath.stem.split("[")[0].split("-")[0]
-        font = TTFont(fpath)
-        has_glyf = "glyf" in font
-        has_cff = "CFF " in font
-        has_fvar = "fvar" in font
-        cmap = font.getBestCmap() or {}
-        font.close()
-        if not has_glyf and not has_cff:
-            continue
-        info[stem] = (fpath, set(cmap.keys()), has_fvar)
-    return info
+    if isinstance(source, (str, Path)):
+        font = TTFont(str(source))
+    else:
+        font = source
+
+    if "fvar" not in font:
+        return font
+
+    return instancer.instantiateVariableFont(
+        font,
+        axisLimits={"wght": float(weight)},
+        overlap=OverlapMode.KEEP_AND_SET_FLAGS,
+    )
 
 
-def _select_fonts(
-    dict_cps: set[int],
-    font_info: dict[str, tuple[Path, set[int], bool]],
-    *,
-    italic: bool = False,
-    fonts_dir: Path | None = None,
-) -> list[tuple[str, Path, set[int]]]:
-    """Greedy set cover: pick fonts from font_info covering dict_cps.
+# Tables fontTools.merge.Merger does not implement and that crash the
+# default merger when present in a source font. MATH (math typesetting,
+# present in NotoSansMath) lacks a `mergeMap` on its sub-table classes
+# (`MathGlyphInfo`, `MathVariants`). BASE / JSTF / STAT / HVAR / VVAR /
+# MVAR similarly lack defined merge logic and trigger either the same
+# AttributeError or a `[NotImplemented, value]` equality assertion when
+# one input has the table and the other doesn't (observed live for grc:
+# NotoSansCypriot + NotoSansSymbols2 + NotoSans).
+#
+# Stripping these tables before merge is safe for engrish coverage —
+# they govern advanced typography (math layout, baseline alignment,
+# justification, style variations) that StarDict/EPUB body rendering
+# does not consult; cmap and glyph outlines (which the merger DOES
+# handle) are preserved.
+_UNMERGEABLE_TABLES: tuple[str, ...] = (
+    "MATH",
+    "BASE",
+    "JSTF",
+    "STAT",
+    "HVAR",
+    "VVAR",
+    "MVAR",
+    # Vertical-metrics tables: NotoSansSymbols2 carries `vhea`/`vmtx` while
+    # NotoSans + NotoSansCypriot do not — schema mismatch fails the Merger's
+    # equality check (`[NotImplemented, value]`). engrish renders horizontally;
+    # vertical metrics aren't consulted.
+    "vhea",
+    "vmtx",
+    "VORG",
+)
 
-    If italic=True, only includes fonts that have an italic variant file on disk.
-    font_info must be pre-built by _build_font_info.
 
-    Returns list of (stem, font_path, assigned_codepoints).
+def _strip_unmergeable_tables(font) -> list[str]:
+    """Drop tables fontTools.merge.Merger cannot handle. Returns dropped tags."""
+    dropped: list[str] = []
+    for tag in _UNMERGEABLE_TABLES:
+        if tag in font:
+            del font[tag]
+            dropped.append(tag)
+    return dropped
+
+
+def _convert_cff_to_tt(font):
+    """Convert a CFF (.otf-style) font to TT (glyf/loca) in-place.
+
+    M13 fix (2026-05-09): ``fontTools.merge.Merger`` cannot merge CFF outlines
+    with TrueType outlines (raises ``AttributeError: 'NotImplementedType'
+    object has no attribute 'cff'`` because CFF lacks a `mergeMap`). Pre-fix,
+    ``pairwise_merge`` caught the exception and silently dropped the CFF
+    source, causing CJK fonts (NotoSansJP/SC/TC/KR-Regular.otf) and any
+    other .otf source to vanish from the merged output.
+
+    Conversion uses ``cu2qu`` to approximate cubic Béziers (CFF) with quadratic
+    Béziers (TT). Tolerance ``max_err=1.0`` is the fontTools-recommended
+    default for body-text rendering — visually indistinguishable.
+
+    No-op if the font already has a ``glyf`` table (was already TT) or if the
+    font has neither ``CFF `` nor ``CFF2``.
     """
-    candidates: dict[str, set[int]] = {}
-    path_map: dict[str, Path] = {}
-    for stem, (fpath, cmap_cps, _has_fvar) in font_info.items():
-        if italic:
-            # Only include this font if an italic variant file exists on disk
-            if fonts_dir is None or not _find_italic_file(stem, fonts_dir):
-                continue
-        candidates[stem] = cmap_cps
-        path_map[stem] = fpath
-
-    covered_list = _greedy_set_cover(dict_cps, candidates)
-    return [(stem, path_map[stem], covered) for stem, covered in covered_list]
-
-
-def _find_italic_file(stem: str, fonts_dir: Path) -> Path | None:
-    """Find an italic variant font file for a stem on disk."""
-    for fpath in fonts_dir.glob("*"):
-        if fpath.suffix not in (".ttf", ".otf"):
-            continue
-        name = fpath.name
-        # Match patterns like NotoSans-Italic[wght].ttf or NotoSans-Italic-Regular.ttf
-        if name.startswith(f"{stem}-Italic"):
-            return fpath
-    return None
-
-
-def _download_italic(stem: str, fonts_dir: Path) -> bool:
-    """Download the italic variant for a font stem.
-
-    Italic files live under the parent family directory, not a separate
-    directory.  E.g. NotoSans-Italic[wght].ttf is at:
-      notofonts.github.io/fonts/NotoSans/unhinted/slim-variable-ttf/NotoSans-Italic[wght].ttf
-    """
-    italic_stem = f"{stem}-Italic"
-    urls = [
-        (
-            f"{_NOTO_BASE}/{stem}/unhinted/slim-variable-ttf/{italic_stem}%5Bwght%5D.ttf",
-            f"{italic_stem}[wght].ttf",
-        ),
-        (
-            f"{_NOTO_BASE}/{stem}/full/ttf/{italic_stem}-Regular.ttf",
-            f"{italic_stem}-Regular.ttf",
-        ),
-        (
-            f"{_GOOGLE_FONTS_BASE}/{stem.lower()}/{italic_stem}%5Bwght%5D.ttf",
-            f"{italic_stem}[wght].ttf",
-        ),
-        (
-            f"{_GOOGLE_FONTS_BASE}/{stem.lower()}/{italic_stem}-Regular.ttf",
-            f"{italic_stem}-Regular.ttf",
-        ),
-    ]
-    for url, filename in urls:
-        log.info("Trying italic: %s", url)
-        try:
-            resp = requests.get(url, timeout=60, stream=True)
-        except requests.RequestException:
-            continue
-        if resp.status_code == 200:
-            dest = fonts_dir / filename
-            size = 0
-            with dest.open("wb") as fh:
-                for chunk in resp.iter_content(chunk_size=65536):
-                    fh.write(chunk)
-                    size += len(chunk)
-            log.info("Downloaded %s (%d bytes)", dest.name, size)
-            return True
-        log.debug("  %d — %s", resp.status_code, url)
-    return False
-
-
-def _build_merged_font(
-    selected: list[tuple[str, Path, set[int]]],
-    wght: float,
-    output_path: Path,
-    *,
-    italic: bool = False,
-    fonts_dir: Path | None = None,
-) -> None:
-    """Subset, flatten, convert, and merge selected fonts into a single .ttf.
-
-    Args:
-        selected: list of (stem, upright_font_path, assigned_codepoints)
-        wght: weight value to pin variable fonts to (400 for regular, 700 for bold)
-        output_path: where to write the merged font
-        italic: if True, use italic variant files instead of upright
-        fonts_dir: directory to search for italic files (required if italic=True)
-    """
-    from fontTools.fontBuilder import FontBuilder
-    from fontTools.merge import Merger
-    from fontTools.pens.cu2quPen import Cu2QuPen
+    from fontTools.ttLib import newTable
     from fontTools.pens.ttGlyphPen import TTGlyphPen
-    from fontTools.subset import Subsetter
+    from fontTools.pens.cu2quPen import Cu2QuPen
+
+    if "glyf" in font:
+        return
+    if "CFF " not in font and "CFF2" not in font:
+        return
+
+    glyph_set = font.getGlyphSet()
+    glyph_order = font.getGlyphOrder()
+
+    glyf = newTable("glyf")
+    glyf.glyphs = {}
+    for gn in glyph_order:
+        tt_pen = TTGlyphPen(glyph_set)
+        cu2qu_pen = Cu2QuPen(tt_pen, max_err=1.0)
+        glyph_set[gn].draw(cu2qu_pen)
+        glyf.glyphs[gn] = tt_pen.glyph()
+
+    # Drop CFF-specific tables; install glyf + loca + sfntVersion = TT.
+    # Also strip layout tables (GPOS/GSUB/GDEF/BASE) — they reference the
+    # original CFF glyph IDs which don't survive the TTGlyphPen rebuild,
+    # and trying to merge them with a TT source's GPOS/GSUB raises
+    # ``TypeError: '<' not supported between instances of 'int' and
+    # 'NotImplementedType'`` from fontTools' merge logic. For dictionary
+    # body-text rendering (StarDict / EPUB), GPOS kerning / GSUB ligatures /
+    # GDEF mark categories / BASE baselines are not consulted — basic
+    # cmap → glyf lookup is sufficient. Vertical-metrics tables likewise.
+    for tag in ("CFF ", "CFF2", "VORG", "GPOS", "GSUB", "GDEF", "BASE",
+                "vhea", "vmtx"):
+        if tag in font:
+            del font[tag]
+    font.sfntVersion = "\x00\x01\x00\x00"  # OpenType TT magic
+    font["glyf"] = glyf
+    # loca is generated on the fly from glyf during compile; install an empty
+    # loca to satisfy the table dependency graph.
+    loca = newTable("loca")
+    loca.set([])
+    font["loca"] = loca
+    # Update head.indexToLocFormat to "long" (1) — safer for fonts with > 32 KB
+    # of glyph data; the compiler will downgrade if it fits in short format.
+    if "head" in font:
+        font["head"].indexToLocFormat = 1
+    # Update maxp version to 1.0 (TrueType profile) so glyf-related fields
+    # (numGlyphs, etc.) are interpreted correctly. CFF fonts' maxp is 0.5
+    # which lacks many TT-required fields; populate them with safe defaults.
+    if "maxp" in font:
+        m = font["maxp"]
+        m.tableVersion = 0x00010000
+        m.numGlyphs = len(glyph_order)
+        m.maxPoints = 0
+        m.maxContours = 0
+        m.maxCompositePoints = 0
+        m.maxCompositeContours = 0
+        m.maxZones = 2
+        m.maxTwilightPoints = 0
+        m.maxStorage = 0
+        m.maxFunctionDefs = 0
+        m.maxInstructionDefs = 0
+        m.maxStackElements = 0
+        m.maxSizeOfInstructions = 0
+        m.maxComponentElements = 0
+        m.maxComponentDepth = 0
+    log.debug("converted CFF source to TT (%d glyphs)", len(glyph_order))
+
+
+def pairwise_merge(fonts: list) -> "TTFont":  # noqa: F821
+    """Combine multiple subsetted source fonts into one via repeated pairwise merger.
+
+    **Why pairwise (M8-AC9):** ``fontTools.merge.Merger`` is more robust on
+    pairs than on N>2 inputs at once — its cmap conflict resolution and table
+    coalescing assume a binary fold. A flat merge over N fonts can hit edge
+    cases (duplicate glyph IDs, conflicting GSUB tables) that the pairwise
+    fold-left pattern avoids by collapsing one font at a time.
+
+    The fold uses ``fontTools.merge.Merger().merge`` left-to-right; the first
+    font in the list provides the base table set.
+
+    **M9 hardening:** before each merge step, ``_UNMERGEABLE_TABLES`` are
+    stripped from each input (MATH, BASE, JSTF, STAT, H/V/M-VAR — none have
+    a working ``Merger`` implementation in fontTools; they crash with either
+    ``AttributeError: ... has no attribute 'mergeMap'`` or
+    ``AssertionError: Expected all items to be equal: [NotImplemented, ...]``).
+    If a pairwise merge step still raises after stripping, the failing source
+    is dropped from the fold (warning logged); its codepoints fall through to
+    D30's Tier-3 warning channel via the upstream coverage check.
+
+    Returns a single merged ``TTFont``. If the list contains zero fonts,
+    raises ``ValueError``. If the list contains one font, returns it as-is.
+    """
+    from fontTools.merge import Merger
     from fontTools.ttLib import TTFont
-    from fontTools.ttLib.scaleUpem import scale_upem
-    from fontTools.varLib.instancer import instantiateVariableFont
 
-    KEEP = {
-        "glyf", "cmap", "head", "hhea", "hmtx", "loca", "maxp",
-        "name", "post", "OS/2", "GSUB", "GPOS", "GDEF",
-    }
+    if not fonts:
+        raise ValueError("pairwise_merge requires at least one font")
+    if len(fonts) == 1:
+        # Strip unmergeable tables for consistency with multi-source path so
+        # downstream cmap/coverage checks see a uniform shape.
+        _convert_cff_to_tt(fonts[0])
+        _strip_unmergeable_tables(fonts[0])
+        return fonts[0]
 
+    # fontTools.merge.Merger.merge accepts a list of paths OR a list of
+    # in-memory TTFont objects depending on version; for portability we
+    # write each font to a tempfile, then pass paths.
     import tempfile
 
-    glyf_temps: list[str] = []
+    paths: list[str] = []
+    tmps: list = []
     try:
-        for stem, upright_path, cps_to_keep in selected:
-            # Use italic file if requested
-            if italic and fonts_dir:
-                fpath = _find_italic_file(stem, fonts_dir)
-                if not fpath:
-                    log.warning("No italic file found for %s - codepoints may be missing from italic font", stem)
-                    continue
-            else:
-                fpath = upright_path
-
-            font = TTFont(fpath)
-
-            # Subset to assigned codepoints
-            sub = Subsetter()
-            sub.populate(unicodes=list(cps_to_keep))
-            sub.subset(font)
-
-            # Flatten variable fonts to target weight
-            if "fvar" in font:
-                axes = {}
-                for axis in font["fvar"].axes:
-                    if axis.axisTag == "wght":
-                        # Clamp to axis range
-                        axes["wght"] = max(axis.minValue, min(wght, axis.maxValue))
-                    else:
-                        axes[axis.axisTag] = axis.defaultValue
-                instantiateVariableFont(font, axes, inplace=True, overlap=0)
-
-            # Scale UPM if needed
-            if font["head"].unitsPerEm != 1000:
-                scale_upem(font, 1000)
-
-            # Convert CFF -> glyf
-            if "CFF " in font:
-                saved_tables = {t: font[t] for t in ("GSUB", "GPOS", "GDEF") if t in font}
-                gs = font.getGlyphSet()
-                go = font.getGlyphOrder()
-                cm = font.getBestCmap()
-                upm = font["head"].unitsPerEm
-                fb = FontBuilder(upm, isTTF=True)
-                fb.setupGlyphOrder(go)
-                fb.setupCharacterMap(cm)
-                gd: dict = {}
-                mt: dict = {}
-                for gn in go:
-                    tp = TTGlyphPen(None)
-                    cp = Cu2QuPen(tp, max_err=1.0, reverse_direction=True)
-                    gs[gn].draw(cp)
-                    gd[gn] = tp.glyph()
-                    mt[gn] = (gs[gn].width, 0)
-                    del tp, cp
-                fb.setupGlyf(gd)
-                fb.setupHorizontalMetrics(mt)
-                del gd, mt, gs, go, cm
-                fb.setupHorizontalHeader(ascent=800, descent=-200)
-                fb.setupNameTable({"familyName": "Engrish", "styleName": "Regular"})
-                fb.setupOS2()
-                fb.setupPost()
-                fb.setupHead(unitsPerEm=upm)
-                old_font = font
-                font = fb.font
-                old_font.close()
-                for t, v in saved_tables.items():
-                    font[t] = v
-                del saved_tables
-
-            # Strip non-essential tables
-            for tag in list(font.keys()):
-                if tag not in KEEP:
-                    del font[tag]
-
+        for f in fonts:
+            # M13 fix (2026-05-09): CFF (.otf) sources must be converted to
+            # TT outlines before merge; fontTools.merge.Merger silently fails
+            # on TT+CFF mix. Pre-fix, the catch-and-warn block below dropped
+            # CFF sources, which is how CJK .otf fonts vanished from the
+            # zh/ja/en/12-locale outputs.
+            _convert_cff_to_tt(f)
+            dropped = _strip_unmergeable_tables(f)
+            if dropped:
+                log.debug("pairwise_merge: stripped unmergeable tables %s from source", dropped)
             tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
-            font.save(tmp.name)
-            glyf_temps.append(tmp.name)
-            font.close()
+            tmp.close()
+            f.save(tmp.name)
+            paths.append(tmp.name)
+            tmps.append(tmp)
 
-        if not glyf_temps:
-            log.warning("No fonts to merge for %s", output_path)
-            return
-
-        # Incremental pairwise merge — O(2 fonts) memory instead of O(N fonts).
-        # Merger.merge() loads ALL input fonts simultaneously, which OOMs on
-        # large font sets (CJK + multi-locale). Merging in pairs bounds memory.
-        intermediate_temps: list[str] = []
-        try:
-            import gc
-            import os as _os
-            import shutil as _shutil
-
-            while len(glyf_temps) > 1:
-                # Merge first two fonts
+        # Pairwise fold-left, with per-step exception handling: if a single
+        # source can't be merged after stripping, skip it (its codepoints
+        # surface in the D30 Tier-3 warning channel).
+        accumulator = paths[0]
+        for next_path in paths[1:]:
+            try:
                 merger = Merger()
-                pair_merged = merger.merge(glyf_temps[:2])
-                del merger
+                merged = merger.merge([accumulator, next_path])
+                tmp_out = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+                tmp_out.close()
+                merged.save(tmp_out.name)
+                accumulator = tmp_out.name
+                tmps.append(tmp_out)
+            except Exception as exc:  # noqa: BLE001 — fontTools merge raises bare classes
+                log.warning(
+                    "pairwise_merge: dropping source %s; merge failed after table-strip: %s",
+                    next_path,
+                    exc,
+                )
+                # accumulator unchanged; this source is omitted from the
+                # final merged font. Its codepoints fall through to D30's
+                # Tier-3 warning channel via the coverage_check call site.
 
-                # Save merged result to a new temp file
-                pair_tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
-                pair_merged.save(pair_tmp.name)
-                pair_merged.close()
-                del pair_merged
-                intermediate_temps.append(pair_tmp.name)
-
-                # Remove the two consumed temp files immediately
-                for consumed in glyf_temps[:2]:
-                    _os.unlink(consumed)
-
-                # Replace consumed pair with merged result
-                glyf_temps = [pair_tmp.name] + glyf_temps[2:]
-                gc.collect()
-
-            # Final font is the fully merged result
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            _shutil.move(glyf_temps[0], str(output_path))
-            glyf_temps = []  # Already moved, don't delete in finally
-
-            log.info("Built %s (%d bytes)", output_path.name, output_path.stat().st_size)
-
-        finally:
-            # Clean up any remaining intermediate temps on error
-            import os as _os2
-            for f in intermediate_temps:
-                if f not in glyf_temps and Path(f).exists():
-                    _os2.unlink(f)
-
+        return TTFont(accumulator)
     finally:
         import os
-        for f in glyf_temps:
-            if Path(f).exists():
-                os.unlink(f)
+
+        for t in tmps:
+            try:
+                os.unlink(t.name)
+            except OSError:
+                pass
 
 
-def generate_fonts(locales: list[str], output_dir: Path, form: str = "") -> None:
-    """Generate minimized font files for a dictionary form.
+# ---------------------------------------------------------------------------
+# M8-C: per-variant ``name`` table + ``hhea`` propagation
+# ---------------------------------------------------------------------------
 
-    Produces 4 font files in output_dir:
-        engrish-regular.ttf     — all scripts, wght=400
-        engrish-bold.ttf        — all scripts, wght=700
-        engrish-italic.ttf      — italic-available scripts only, wght=400
-        engrish-bold-italic.ttf — italic-available scripts only, wght=700
+# Platform / encoding / language IDs for the three name-table records every
+# OpenType reader expects. Subset chosen to match what Noto fonts actually
+# ship — these are the records sdcv / KOReader / Crosspoint actually consult.
+_NAME_RECORD_KEYS: tuple[tuple[int, int, int], ...] = (
+    (3, 1, 0x0409),  # Windows / Unicode BMP / English (US)
+    (1, 0, 0),       # Mac / Roman / English
+    (0, 4, 0),       # Unicode / Unicode 2.0+ / (langID irrelevant)
+)
+
+
+def set_subfamily(ttfont, subfamily: str) -> None:
+    """Write ``name`` table ID 2 (Font Subfamily) across all expected platform records.
+
+    Per M8-AC4: each generated TTF (Regular / Bold / Italic / Bold Italic)
+    MUST carry a distinct Subfamily label. Legacy code's all-"Regular"
+    fallthrough — caused by setting only one platform record while leaving
+    the other two stale — is rejected.
+
+    ``subfamily`` is the human-readable label ("Regular" / "Bold" / "Italic"
+    / "Bold Italic"). The function uses ``setName`` for each of the three
+    canonical (platformID, platEncID, langID) tuples; older / unusual
+    records left over from the source font remain untouched (they're
+    typically ignored by readers that consult the canonical records).
     """
-    import gc
+    name_table = ttfont["name"]
+    for platform_id, plat_enc_id, lang_id in _NAME_RECORD_KEYS:
+        name_table.setName(subfamily, 2, platform_id, plat_enc_id, lang_id)
 
-    if not form:
-        form = "+".join(locales)
 
-    dict_cps = collect_codepoints(locales)
-    if not dict_cps:
-        raise RuntimeError(f"No codepoints collected for form '{form}'")
-    log.info("Collected %d codepoints for form '%s'", len(dict_cps), form)
+def propagate_hhea(target, source_paths: list) -> None:
+    """Aggregate ``hhea`` metrics across source fonts and write to ``target``.
 
-    try:
-        # Build font info cache once — opens each font exactly once for cmap + fvar.
-        font_info = _build_font_info(FONTS_DIR)
+    Aggregate rule (per M8-AC5):
+    - ``ascent``    = ``max(source.hhea.ascent)``
+    - ``descent``   = ``min(source.hhea.descent)`` (descents are negative)
+    - ``lineGap``   = ``max(source.hhea.lineGap)``
 
-        # Ensure italic variants are available for fonts that publish them.
-        # Uses the pre-built font_info (has_fvar) to avoid re-opening fonts.
-        for stem, (_fpath, _cmap_cps, has_fvar) in font_info.items():
-            if has_fvar and not _find_italic_file(stem, FONTS_DIR):
-                _download_italic(stem, FONTS_DIR)
+    The merged font carries glyphs from multiple scripts; using the largest
+    vertical envelope across sources ensures no script's glyphs clip. No
+    hard-coded 800 / -200 — this matches what each source designer chose,
+    which is what each script's glyphs were drawn against.
 
-        # Select fonts for upright variants (all scripts)
-        upright_selected = _select_fonts(dict_cps, font_info, italic=False)
-        log.info("Selected %d fonts for upright variants", len(upright_selected))
+    ``source_paths`` is a list of paths to source TTF/OTF files (the inputs
+    that fed the merge). ``target`` is the merged ``TTFont`` to be patched.
+    """
+    from fontTools.ttLib import TTFont
 
-        # Select fonts for italic variants (only fonts with italic files on disk)
-        italic_selected = _select_fonts(dict_cps, font_info, italic=True, fonts_dir=FONTS_DIR)
-        log.info("Selected %d fonts for italic variants", len(italic_selected))
+    if not source_paths:
+        return
 
-        # Release font_info memory before building merged fonts
-        del font_info
-        gc.collect()
+    ascents: list[int] = []
+    descents: list[int] = []
+    line_gaps: list[int] = []
+    for sp in source_paths:
+        src = TTFont(str(sp), lazy=True)
+        try:
+            hhea = src["hhea"]
+            ascents.append(hhea.ascent)
+            descents.append(hhea.descent)
+            line_gaps.append(hhea.lineGap)
+        finally:
+            src.close()
 
-        # Build all 4 variants
-        variants = [
-            ("engrish-regular.ttf", upright_selected, 400.0, False),
-            ("engrish-bold.ttf", upright_selected, 700.0, False),
-            ("engrish-italic.ttf", italic_selected, 400.0, True),
-            ("engrish-bold-italic.ttf", italic_selected, 700.0, True),
-        ]
+    target_hhea = target["hhea"]
+    target_hhea.ascent = max(ascents)
+    target_hhea.descent = min(descents)
+    target_hhea.lineGap = max(line_gaps)
 
-        for filename, selected, wght, is_italic in variants:
-            if not selected:
-                log.warning("No fonts selected for %s, skipping", filename)
+
+# ---------------------------------------------------------------------------
+# M8-E: source-font discovery + form orchestrator
+# ---------------------------------------------------------------------------
+
+
+def stem_to_path(stem: str, fonts_dir: Path) -> Path | None:
+    """Resolve a Noto font stem (e.g. ``"NotoSans"``) to an actual font file.
+
+    Preference order:
+    1. Variable font ``<stem>[wght].ttf``.
+    2. Static Regular ``<stem>-Regular.ttf``.
+    3. Italic-only static ``<stem>-Italic.ttf``.
+    4. Any-suffix fallback via ``font_io.find_font_file`` (handles ``.otf``
+       CJK fonts like ``NotoSansJP-Regular.otf``, color-emoji variants like
+       ``NotoColorEmoji-noflags.ttf``, etc.).
+
+    Returns ``None`` if no match found.
+
+    M13 fix (2026-05-09): pre-fix this function only checked the 3 hardcoded
+    ``.ttf`` candidates and silently returned None for CJK ``.otf`` fonts +
+    NotoColorEmoji-noflags.ttf, causing ``resolve_source_fonts`` to drop
+    those stems and ja/zh/en form-fonts to ship without CJK / emoji glyph
+    coverage. ``font_io.find_font_file`` (used by ``update-fonts``) already
+    handled both extensions; the two stem-resolvers had diverged.
+    """
+    candidates = [
+        fonts_dir / f"{stem}[wght].ttf",
+        fonts_dir / f"{stem}-Regular.ttf",
+        fonts_dir / f"{stem}-Italic.ttf",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    # Fallback: scan the dir for any matching extension/suffix variant.
+    from engrish.font_io import find_font_file
+    return find_font_file(stem, fonts_dir)
+
+
+# Color-bitmap font stems excluded from the subset+merge pipeline.
+# NotoColorEmoji ships as CBDT/CBLC color bitmap tables; ``fontTools.merge.Merger``
+# cannot combine bitmap fonts with TT-outline fonts (the merger picks the
+# bitmap base and silently drops every outline source). Pre-M13 (D40), these
+# stems were silently dropped by the resolver because their filename suffix
+# didn't match the 3 hardcoded .ttf candidates. Post-D40, they resolve cleanly
+# but break the merge. We exclude them explicitly here. Per engrish.md ("EPUBs
+# never embed fonts; install Noto fonts on reader") emoji rendering on the
+# user's device falls back to the reader's built-in color-emoji font.
+_FONT_STEMS_EXCLUDED_FROM_MERGE: tuple[str, ...] = ("NotoColorEmoji",)
+
+
+def resolve_source_fonts(locales: list[str], fonts_dir: Path) -> list[Path]:
+    """Look up the per-locale ``fonts`` lists in ``engrish.json``; resolve each
+    stem to a real TTF path. Returns deduped list in form-locale order.
+
+    Excludes color-bitmap stems (``_FONT_STEMS_EXCLUDED_FROM_MERGE``) which
+    ``fontTools.merge.Merger`` cannot combine with outline fonts.
+    """
+    from engrish.config import _ENGRISH_CFG
+
+    seen: set[str] = set()
+    out: list[Path] = []
+    for code in locales:
+        cfg = _ENGRISH_CFG.get(code, {})
+        for stem in cfg.get("fonts", []):
+            if stem in seen:
                 continue
-            out_path = output_dir / filename
-            log.info("Building %s (wght=%.0f, %d fonts)...", filename, wght, len(selected))
-            _build_merged_font(
-                selected, wght, out_path,
-                italic=is_italic, fonts_dir=FONTS_DIR,
+            seen.add(stem)
+            if stem in _FONT_STEMS_EXCLUDED_FROM_MERGE:
+                log.info(
+                    "resolve_source_fonts: excluding %r (color-bitmap; "
+                    "see _FONT_STEMS_EXCLUDED_FROM_MERGE)",
+                    stem,
+                )
+                continue
+            path = stem_to_path(stem, fonts_dir)
+            if path is not None:
+                out.append(path)
+            else:
+                log.warning("font stem %r for locale %r has no matching file in %s", stem, code, fonts_dir)
+    return out
+
+
+def build_form_fonts(
+    form: str,
+    locales: list[str],
+    df_path: Path,
+    out_dir: Path,
+    fonts_dir: Path,
+    log_path: Path | None = None,
+) -> dict[str, Path]:
+    """Top-level orchestrator: produce the four ``{Regular,Bold,Italic,BoldItalic}.ttf``
+    plus the ``coverage_gaps.txt`` artifact.
+
+    Returns a dict keyed by style label (``"Regular"`` / ``"Bold"`` / ``"Italic"`` /
+    ``"Bold Italic"``) mapped to the output path.
+
+    Pipeline:
+    1. ``scan_codepoints`` (M8-A) to derive per-style codepoint sets + first-ref map.
+    2. ``resolve_source_fonts`` to map locale font stems → real TTF paths.
+    3. For each style-pair (R+B, I+BI):
+       - ``subset_for_style_pair`` (M8-B) — single counter increment, returns
+         pairwise-merged subset.
+       - ``instantiate_variable`` (M8-B) at the pair's two weights (400 + 700).
+       - For each weight variant: ``set_subfamily`` (M8-C), ``propagate_hhea``
+         (M8-C), ``assert_under_format_limits`` (M8-D), ``save_font_deterministic``
+         (M8-D).
+    4. ``coverage_check`` (M8-A) over ``S − U`` → ``WarningChannel.emit``.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    scanned = scan_codepoints(df_path)
+    sources = resolve_source_fonts(locales, fonts_dir)
+    if not sources:
+        raise BuildError(
+            f"no source fonts resolved for form {form!r} (locales {locales}); "
+            f"check engrish.json `fonts` and the contents of {fonts_dir}"
+        )
+
+    source_union = union_source_coverage(sources)
+
+    rb_codepoints = scanned.per_style[STYLE_REGULAR] | scanned.per_style[STYLE_BOLD]
+    ib_codepoints = scanned.per_style[STYLE_ITALIC] | scanned.per_style[STYLE_BOLD_ITALIC]
+
+    reset_subset_counter()
+
+    # Subset returns per-source lists (no merge yet — fontTools.merge can't
+    # handle variable fonts; merge happens downstream after instantiation).
+    rb_subsetted = subset_for_style_pair(sources, rb_codepoints) if rb_codepoints else None
+    ib_subsetted = (
+        subset_for_style_pair(sources, ib_codepoints) if ib_codepoints else None
+    )
+
+    outputs: dict[str, Path] = {}
+
+    def _emit_variant(subsetted_list, subfamily: str, weight: int) -> Path:
+        font = instantiate_and_merge_static(subsetted_list, weight=weight)
+        set_subfamily(font, subfamily)
+        propagate_hhea(font, sources)
+        assert_under_format_limits(font)
+        path = out_dir / f"{subfamily.replace(' ', '')}.ttf"
+        save_font_deterministic(font, path)
+        return path
+
+    if rb_subsetted is not None:
+        outputs["Regular"] = _emit_variant(rb_subsetted, "Regular", 400)
+        outputs["Bold"] = _emit_variant(rb_subsetted, "Bold", 700)
+    if ib_subsetted is not None:
+        outputs["Italic"] = _emit_variant(ib_subsetted, "Italic", 400)
+        outputs["Bold Italic"] = _emit_variant(ib_subsetted, "Bold Italic", 700)
+
+    # If italic codepoints were empty, fall back to copying Regular/Bold for
+    # Italic/BoldItalic so the AC1 four-file contract is met. (M8-F may
+    # refine to use real italic source variants when available.)
+    if "Italic" not in outputs and "Regular" in outputs:
+        from shutil import copyfile
+
+        outputs["Italic"] = out_dir / "Italic.ttf"
+        copyfile(outputs["Regular"], outputs["Italic"])
+        outputs["Bold Italic"] = out_dir / "BoldItalic.ttf"
+        copyfile(outputs["Bold"], outputs["Bold Italic"])
+
+    # Coverage warnings: codepoints in S − U emit per-codepoint warnings.
+    coverage_report = coverage_check(scanned, source_union, generated_cmap=None)
+    channel = WarningChannel(log_path=log_path, coverage_gaps_path=out_dir / "coverage_gaps.txt")
+    channel.emit(coverage_report.tier3_warnings, scanned)
+
+    return outputs
+
+
+# ---------------------------------------------------------------------------
+# M8-D: overflow assertion + byte-deterministic save
+# ---------------------------------------------------------------------------
+
+# TrueType / OpenType ceilings that the StarDict pipeline must NOT cross.
+# Crossing them silently corrupts lookups at runtime — fail fast at build.
+_MAX_GLYPH_COUNT = 65535  # 16-bit GlyphID ceiling (per ISO/IEC 14496-22 §5.3.4)
+# OpenType ``head.created`` / ``head.modified`` are seconds since 1904-01-01.
+# fontTools auto-reinterprets values < ~2.08 G as Unix-epoch (it heuristically
+# bumps them by the 1904→1970 offset). Pin both to the OpenType seconds for
+# 1970-01-01T00:00:00 (= 2082844800) so fontTools accepts the value verbatim
+# and write paths produce byte-identical output run-over-run.
+_FIXED_HEAD_TIMESTAMP = 2082844800
+
+
+def assert_under_format_limits(ttfont) -> None:
+    """Pre-save guard against TT/OT structural ceilings (M8-AC3 / I16 / Δ12).
+
+    Checks:
+    - ``maxp.numGlyphs < 65535`` — the GlyphID is a 16-bit unsigned int.
+      Exceeding silently truncates references and corrupts lookups.
+    - Every cmap subtable's max codepoint fits in its declared encoding range.
+      A subtable declared as 16-bit BMP-only carrying SMP codepoints would
+      truncate at runtime.
+
+    Raises ``BuildError`` with an actionable message on the FIRST violation
+    found. The message names the corpus-shrinking levers the operator can
+    pull (drop low-value locales / etymology / low-priority scripts).
+    """
+    num_glyphs = ttfont["maxp"].numGlyphs
+    if num_glyphs >= _MAX_GLYPH_COUNT:
+        raise BuildError(
+            f"Glyph count {num_glyphs:,} ≥ TrueType 16-bit ceiling {_MAX_GLYPH_COUNT:,}. "
+            f"The StarDict pipeline cannot proceed — lookups would silently corrupt at "
+            f"runtime. Mitigations: drop low-value locales from the form; build "
+            f"-noetym variants; split the form into multiple smaller dictionaries."
+        )
+
+    # cmap encoding range check — only flag obvious mismatches; subtables
+    # that legitimately span SMP must declare encoding 4 (Unicode UCS-4).
+    cmap = ttfont["cmap"]
+    for subtable in cmap.tables:
+        max_cp = max(subtable.cmap.keys()) if subtable.cmap else 0
+        # Format 4 / encoding 1 = 16-bit BMP only.
+        if subtable.format == 4 and max_cp > 0xFFFF:
+            raise BuildError(
+                f"cmap subtable (platform={subtable.platformID}, encoding={subtable.platEncID}, "
+                f"format=4) carries codepoint U+{max_cp:04X} above BMP ceiling 0xFFFF. "
+                f"The subtable encoding cannot represent SMP codepoints; lookups would "
+                f"silently miss. Use cmap format 12 (encoding 4) for SMP-spanning fonts."
             )
 
-        log.info("Font generation complete for form '%s'", form)
-    finally:
-        # Always clear all font caches even on exception
-        clear_font_caches()
-        gc.collect()
 
+def save_font_deterministic(ttfont, path) -> None:
+    """Save ``ttfont`` to ``path`` with fixed ``head`` timestamps for byte-determinism.
 
-def run_font(dicts: list[str] | None, *, all_dicts: bool = False) -> int:
-    """CLI entry point for the 'font' subcommand."""
-    import sys
+    fontTools' default ``TTFont.save`` updates ``head.modified`` to the current
+    wall-clock time via ``recalcTimestamp=True``, which breaks two-run
+    byte-equality. We disable that update and pin both ``head.created`` and
+    ``head.modified`` to ``_FIXED_HEAD_TIMESTAMP`` (= 1970-01-01 in OpenType
+    seconds — high enough that fontTools' load-time Unix-epoch reinterpretation
+    heuristic doesn't apply).
 
-    from .epub import _discover_all_dicts
-    from .paths import engrish_form_dir
-
-    if all_dicts:
-        dicts = _discover_all_dicts()
-        if not dicts:
-            print("Error: no existing dictionaries found", file=sys.stderr)
-            return 1
-        log.info("Discovered dictionaries: %s", ", ".join(dicts))
-
-    errors: list[str] = []
-    for form in dicts:
-        form_dir = engrish_form_dir(form)
-        if not form_dir.exists() or not any(form_dir.iterdir()):
-            errors.append(f"Dictionary '{form}' not found at {form_dir}")
-
-    if errors:
-        for err in errors:
-            print(f"Error: {err}", file=sys.stderr)
-        return 1
-
-    import gc
-
-    for form in dicts:
-        locales = [c.strip() for c in form.split("+") if c.strip()]
-        form_dir = engrish_form_dir(form)
-        log.info("Generating fonts: %s -> %s", form, form_dir)
-        try:
-            generate_fonts(locales, form_dir, form=form)
-        except Exception as exc:
-            log.error("Font generation failed for '%s': %s", form, exc)
-        gc.collect()
-
-    return 0
+    Per M8-AC11 / Δ3 (font leg).
+    """
+    head = ttfont["head"]
+    head.created = _FIXED_HEAD_TIMESTAMP
+    head.modified = _FIXED_HEAD_TIMESTAMP
+    ttfont.recalcTimestamp = False
+    ttfont.save(str(path))

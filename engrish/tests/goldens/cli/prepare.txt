@@ -1,0 +1,6 @@
+usage: engrish prepare [-h] [--locale LOCALE]
+
+options:
+  -h, --help       show this help message and exit
+  --locale LOCALE  Locale code (informational only; dump is shared across
+                   engrish locales).

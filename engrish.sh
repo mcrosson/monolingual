@@ -1,78 +1,112 @@
 #!/bin/bash
+# engrish.sh — top-level shell orchestrator (per D27).
+#
+# Wraps the per-form Python CLI (per D26: 7 subcommands, --form FORM, no --all
+# / --all-singles / --epub / --font flags on `generate`) in loops to build the
+# project's full dictionary set. Per-form work is 3 sequential subcommand
+# calls: `generate --form X`, `epub --form X`, `font --form X`.
+#
+# After all forms complete, performs humanized-name + category post-processing
+# on the StarDict output directories.
 
-# cleanup & test run capabilities
-#    here for completeness, the main body of the script below is the primary use case and does not get a dedicated flag
+set -e  # abort on first failure (replaces && chaining of the legacy version)
+
+PY="./venv/bin/python"
+ENGRISH="$PY engrish.py --keep-xml"
+
+# === Argument parsing ===
+
+ONLY_FORM=""
+i=0
 for arg in "$@"; do
+  i=$((i+1))
   case "$arg" in
     --delete-data)
-      rm -r data
+      rm -rf data
       ;;
     --prepare)
-      ./venv/bin/python engrish.py --keep-xml prepare
+      $ENGRISH prepare
+      exit
       ;;
     --run-tests)
-      ./venv/bin/python -m pytest tests/test_engrish.py -x -vvv -s
+      # Post-M11 test tree per D9; pre-M11 tests/test_engrish.py was deleted.
+      $PY -m pytest engrish/tests/ -x -vvv -s
       exit
+      ;;
+    --only)
+      # --only FORM — run build_form for a single form, skip singles loop and
+      # post-processing. Used by integration tests (M11-AC3) and ad-hoc rebuilds.
+      eval "ONLY_FORM=\${$((i+1))}"
       ;;
   esac
 done
 
-# data processing
+# build_form: invoke the 3 per-form subcommands in dependency order.
+# Each subcommand recurses into its upstream producer per D29 if needed,
+# so `generate` will trigger render/parse/prepare on first call.
+build_form() {
+  local form="$1"
+  $ENGRISH generate --form "$form"
+  $ENGRISH epub --form "$form"
+  $ENGRISH font --form "$form"
+}
 
-rm -r data/engrish
+if [ -n "$ONLY_FORM" ]; then
+  # Single-form mode (used for integration testing). Does NOT wipe data/engrish
+  # to allow incremental re-runs against the same artifact tree.
+  build_form "$ONLY_FORM"
+  exit
+fi
 
-./venv/bin/python engrish.py --keep-xml generate --all-singles --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ang+enm+en --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type grc+el --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type fro+frm+fr --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type fa+peo+pal --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ru+cu --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type got+non+ang --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+la+grc --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+grc+he+arc+syc+cop --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type sa+pi+bo --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+fr+es+it --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+he+arc+syc --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type ar+fa --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type zh+ja --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type egy+akk --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type la+ang+enm+fr --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+fr+de+es+ru --epub --font && \
-./venv/bin/python engrish.py --keep-xml generate --engrish-type en+enm+ang+es+fr+de+ru+it+el+la+fro+grc --epub --font
+# === Build (full pipeline) ===
+
+# Wipe per-form output directories from prior runs. Source data (parse DB,
+# render JSON, fonts) is NOT touched — D29 presence-on-disk = valid; the
+# per-form rebuild reuses upstream artifacts.
+rm -rf data/engrish
+
+# === Single-locale forms (was --all-singles in legacy CLI) ===
+# Iterate every language key in engrish.json; one form per locale.
+SINGLES=$($PY -c "import json; cfg = json.load(open('engrish/engrish.json')); print(' '.join(cfg['languages'].keys()))")
+for locale in $SINGLES; do
+  build_form "$locale"
+done
 
 # === Historical / Diachronic ===
-# ang+enm+en          # Comprehensive English
-# grc+el              # Comprehensive Greek
-# fro+frm+fr          # Comprehensive French
-# fa+peo+pal          # Comprehensive Persian
-# ru+cu               # Slavic Historical
-# got+non+ang         # Germanic
+build_form "ang+enm+en"          # Comprehensive English
+build_form "grc+el"              # Comprehensive Greek
+build_form "fro+frm+fr"          # Comprehensive French
+build_form "fa+peo+pal"          # Comprehensive Persian
+build_form "ru+cu"               # Slavic Historical
+build_form "got+non+ang"         # Germanic
 
 # === Classical / Foundational ===
-# la+grc              # Western Classics
-# sa+la+grc           # Classical Triad
+build_form "la+grc"              # Western Classics
+build_form "sa+la+grc"           # Classical Triad
 
 # === Religious Texts ===
-# la+grc+he+arc+syc+cop  # Biblical
-# sa+pi               # Buddhist Canonical
-# sa+pi+bo            # Buddhist Studies
+build_form "la+grc+he+arc+syc+cop"  # Biblical
+build_form "sa+pi"               # Buddhist Canonical
+build_form "sa+pi+bo"            # Buddhist Studies
 
 # === Regional Families ===
-# la+fr+es+it         # Romance
-# ar+he+arc+syc       # Semitic
-# ar+fa               # Islamic Studies
-# zh+ja               # East Asian
-# egy+akk             # Ancient Near East
+build_form "la+fr+es+it"         # Romance
+build_form "ar+he+arc+syc"       # Semitic
+build_form "ar+fa"               # Islamic Studies
+build_form "zh+ja"               # East Asian
+build_form "egy+akk"             # Ancient Near East
 
 # === Period ===
-# la+ang+enm+fr       # Medieval Western European
+build_form "la+ang+enm+fr"       # Medieval Western European
 
 # === Modern Practical ===
-# en+fr+de+es         # Modern Western European
-# en+fr+de+es+ru      # Modern Major European
+build_form "en+fr+de+es"         # Modern Western European
+build_form "en+fr+de+es+ru"      # Modern Major European
+
+# === Personal ===
+build_form "en+enm+ang+es+fr+de+ru+it+el+la+fro+grc"  # Comprehensive 12-locale
+
+# === Post-processing: humanized category layout ===
 
 BASE="data/engrish"
 HUMAN="$BASE/humanized"
@@ -88,7 +122,8 @@ mkdir -p \
   "$HUMAN/personal"
 
 # Copy source form dir into humanized/<category>/<name>,
-# then rename immediate children: replace form identifier with human name
+# then rename immediate children: replace form identifier with human name.
+# Form directories on disk use `+` → `-` per engrish.paths.engrish_form_dir().
 copy_dict() {
   local form="$1" category="$2" name="$3"
   local src="$BASE/${form//+/-}"
