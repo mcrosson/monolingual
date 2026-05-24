@@ -52,7 +52,7 @@ U+0723 Gothic:𐍃𐍀𐍅𐍂𐌴𐌹𐌳𐌰
 U+0726 Gothic:𐍃𐍀𐍅𐍂𐌴𐌹𐌳𐌰
 U+072A Gothic:𐍃𐍀𐍅𐍂𐌴𐌹𐌳𐌰
 U+0902 Gothic:𐌰𐌼𐍃
-U+0903 Gothic:𐍅𐌴𐌹𐌷𐍃
+U+0903 Gothic:𐍅𐌴𐌹𐌷𐌰
 U+0905 Gothic:-𐌽𐌳𐍃
 U+0907 Gothic:-𐌹𐌲𐍃
 U+0909 Gothic:𐌰𐌿𐌷𐍃𐌰

@@ -3,17 +3,17 @@ U+053F Italian:Kasparov
 U+0561 Italian:grabar
 U+0562 Italian:grabar
 U+0563 Italian:grabar
-U+0565 Italian:bere
-U+0568 Italian:bere
+U+0565 Italian:bei
+U+0568 Italian:bei
 U+056B Italian:ciocio
-U+056C Italian:bere
+U+056C Italian:bei
 U+056F Italian:Versace
 U+0573 Italian:ciocio
-U+0574 Italian:bere
+U+0574 Italian:bei
 U+0575 Italian:Kasparov
 U+0576 Italian:Kasparov
 U+0578 Italian:luna
-U+057A Italian:bere
+U+057A Italian:bei
 U+057D Italian:Kasparov
 U+057E Italian:Versace
 U+0580 Italian:grabar
@@ -21,6 +21,7 @@ U+0582 Italian:luna
 U+05B0 Italian:Abdenago
 U+05B1 Italian:Elisabetta
 U+05B2 Italian:Abacuc
+U+05B3 Italian:mardocheo
 U+05B4 Italian:Abimelech
 U+05B5 Italian:Abdenago
 U+05B6 Italian:Abimelech
@@ -83,7 +84,7 @@ U+0636 Italian:abadita
 U+0637 Italian:Alcantara
 U+0638 Italian:Alnilam
 U+0639 Italian:abaya
-U+063A Italian:almogavero
+U+063A Italian:algol
 U+0640 Italian:tarocco
 U+0641 Italian:alfa
 U+0642 Italian:alambicco
@@ -175,14 +176,14 @@ U+092F Italian:ariano
 U+0930 Italian:arancia
 U+0932 Italian:baral
 U+0935 Italian:Barlaam
-U+0936 Italian:sari
+U+0936 Italian:kashmir
 U+0937 Italian:costo
 U+0938 Italian:chousingha
 U+0939 Italian:Barlaam
 U+093C Italian:baral
 U+093E Italian:arancia
 U+093F Italian:Barlaam
-U+0940 Italian:bere
+U+0940 Italian:bei
 U+0941 Italian:Barlaam
 U+0942 Italian:duro
 U+0943 Italian:carminio
@@ -342,6 +343,7 @@ U+1860 Italian:manciù
 U+2190 Italian:-acchio
 U+2192 Italian:-aglia
 U+2207 Italian:nabla
+U+264D Italian:vergine
 U+2665 Italian:a cuore
 U+266E Italian:bequadro
 U+2764 Italian:lovvare
@@ -423,6 +425,7 @@ U+4F8D Italian:samurai
 U+4FF3 Italian:haiku
 U+5200 Italian:catana
 U+5206 Italian:bu
+U+5229 Italian:mori
 U+523A Italian:sashimi
 U+529B Italian:risciò
 U+5357 Italian:Annam
@@ -479,6 +482,7 @@ U+6771 Italian:Canton
 U+67D4 Italian:judo
 U+67FF Italian:cachi
 U+6850 Italian:setino
+U+68EE Italian:mori
 U+6B4C Italian:kabuki
 U+6B69 Italian:bu
 U+6BD2 Italian:sodoku
@@ -579,7 +583,7 @@ U+1030D Italian:Bolsena
 U+1030F Italian:decotto
 U+10310 Italian:Fiesole
 U+10313 Italian:Arezzo
-U+10314 Italian:Fiesole
+U+10314 Italian:chiusi
 U+10315 Italian:Arezzo
 U+10316 Italian:cembro
 U+10317 Italian:Tarquinia
@@ -601,7 +605,7 @@ U+1033C Italian:ammannire
 U+1033D Italian:ammannire
 U+1033E Italian:aia
 U+1033F Italian:baita
-U+10340 Italian:nappo
+U+10340 Italian:nappi
 U+10342 Italian:Alarico
 U+10343 Italian:Alarico
 U+10344 Italian:asti
@@ -653,6 +657,7 @@ U+10B6C Italian:scià
 U+10B6D Italian:Cina
 U+10B70 Italian:Cina
 U+12000 Italian:Eufrate
+U+1202D Italian:babele
 U+12040 Italian:calibe
 U+1207E Italian:divano
 U+1208D Italian:ziqqurat
@@ -664,8 +669,9 @@ U+12141 Italian:Eufrate
 U+12145 Italian:calibe
 U+12146 Italian:ziqqurat
 U+12156 Italian:Eufrate
+U+1218D Italian:babele
 U+12195 Italian:meschino
-U+121A0 Italian:calibe
+U+121A0 Italian:babele
 U+121C9 Italian:Eufrate
 U+121F7 Italian:calibe
 U+121FB Italian:calibe
@@ -673,7 +679,7 @@ U+12226 Italian:meschino
 U+12261 Italian:canna
 U+12263 Italian:Eufrate
 U+1226A Italian:ziqqurat
-U+1228F Italian:Eufrate
+U+1228F Italian:babele
 U+12305 Italian:Eufrate
 U+12311 Italian:canna
 U+12313 Italian:Eufrate

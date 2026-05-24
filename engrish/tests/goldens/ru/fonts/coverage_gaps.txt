@@ -59,7 +59,7 @@ U+0582 Russian:Азнавур
 U+0583 Russian:пахлава
 U+0584 Russian:Алексанян
 U+0587 Russian:Эривань
-U+05B0 Russian:аллилуйя
+U+05B0 Russian:аким
 U+05B1 Russian:Елизавета
 U+05B2 Russian:абакумыч
 U+05B3 Russian:Ноеминь
@@ -68,7 +68,7 @@ U+05B5 Russian:бегемот
 U+05B6 Russian:аред
 U+05B7 Russian:абакумыч
 U+05B8 Russian:Адам
-U+05B9 Russian:бегемот
+U+05B9 Russian:аким
 U+05BB Russian:Иешуа
 U+05BC Russian:абакумыч
 U+05BE Russian:Ефингар
@@ -119,7 +119,7 @@ U+0671 Russian:Сейфулла
 U+067E Russian:бахмат
 U+0686 Russian:алыча
 U+069A Russian:пашто
-U+06A9 Russian:калека
+U+06A9 Russian:баку
 U+06AD Russian:янычар
 U+06AF Russian:баклажан
 U+06C1 Russian:Индостан
@@ -158,7 +158,7 @@ U+0919 Russian:брякать
 U+091A Russian:искать
 U+091B Russian:искать
 U+091C Russian:гулаб джамун
-U+091E Russian:знать
+U+091E Russian:знаешь
 U+091F Russian:Карнатака
 U+0920 Russian:плевать
 U+0921 Russian:баклажан
@@ -542,6 +542,7 @@ U+4E2D Russian:Накано
 U+4E39 Russian:Китай
 U+4E3B Russian:бонза
 U+4E3C Russian:донбури
+U+4E60 Russian:си
 U+4E66 Russian:нюй-шу
 U+4E8C Russian:эрху
 U+4E95 Russian:Фукуи
@@ -554,7 +555,7 @@ U+4EE3 Russian:Тиёда
 U+4EEE Russian:кана
 U+4F0A Russian:Дате
 U+4F0E Russian:кабуки
-U+4F50 Russian:сайра
+U+4F50 Russian:сага
 U+4F53 Russian:кокутай
 U+4F8D Russian:самурай
 U+4FA8 Russian:хуацяо
@@ -591,7 +592,7 @@ U+52DD Russian:Токати
 U+5301 Russian:момме
 U+5305 Russian:баоцзы
 U+5308 Russian:сюнну
-U+5317 Russian:Пекин
+U+5317 Russian:кита
 U+5340 Russian:Кандонгу
 U+5341 Russian:Токати
 U+5343 Russian:Тиба
@@ -658,6 +659,7 @@ U+5B54 Russian:Кун-цзы
 U+5B57 Russian:атэдзи
 U+5B85 Russian:Мияке
 U+5B8B Russian:Сун
+U+5B97 Russian:соя
 U+5B98 Russian:гуаньхуа
 U+5B9D Russian:ямб
 U+5BA4 Russian:Немуро
@@ -749,6 +751,7 @@ U+672D Russian:есаул
 U+672F Russian:ушу
 U+6749 Russian:Сугинами
 U+6761 Russian:фунчоза
+U+6768 Russian:ян
 U+6771 Russian:Гуандун
 U+677F Russian:Итабаси
 U+6781 Russian:тайцзи
@@ -765,6 +768,7 @@ U+68A8 Russian:Яманаси
 U+68CB Russian:сянци
 U+68CD Russian:нунтяку
 U+68EE Russian:Аомори
+U+694A Russian:ян
 U+6975 Russian:тайцзи
 U+6A2A Russian:Иокогама
 U+6A3D Russian:Отару
@@ -810,6 +814,7 @@ U+6E21 Russian:Осима
 U+6E29 Russian:онсэн
 U+6E2F Russian:Минато
 U+6E7E Russian:Тайвань
+U+6ECB Russian:сига
 U+6EE8 Russian:Харбин
 U+6F22 Russian:кандзи
 U+6F2B Russian:манга
@@ -882,6 +887,7 @@ U+7EA2 Russian:хунвейбин
 U+7EB8 Russian:бумажный тигр
 U+7F85 Russian:сайра
 U+7FA4 Russian:Гумма
+U+7FD2 Russian:си
 U+8001 Russian:бумажный тигр
 U+8005 Russian:гейша
 U+80C6 Russian:Ибури
@@ -891,6 +897,7 @@ U+8150 Russian:тофу
 U+8179 Russian:сэппуку
 U+81FA Russian:маотай
 U+821E Russian:кабуки
+U+826F Russian:нара
 U+8272 Russian:Шикотан
 U+82A6 Russian:Асибецу
 U+82B1 Russian:байховый
@@ -936,6 +943,7 @@ U+8C4A Russian:Томигусуку
 U+8C5A Russian:тонкацу
 U+8C61 Russian:слон
 U+8CA1 Russian:дзайбацу
+U+8CC0 Russian:сага
 U+8CC7 Russian:каппутизм
 U+8D44 Russian:каппутизм
 U+8D64 Russian:Акабира
@@ -1143,13 +1151,13 @@ U+10AC9 Russian:казна
 U+10AD7 Russian:казна
 U+10AE1 Russian:казна
 U+10B00 Russian:болого
-U+10B01 Russian:плавить
+U+10B01 Russian:дон
 U+10B04 Russian:туман
 U+10B06 Russian:болого
 U+10B08 Russian:болого
 U+10B09 Russian:вид
 U+10B0C Russian:болого
-U+10B0E Russian:куб
+U+10B0E Russian:дон
 U+10B10 Russian:крат
 U+10B11 Russian:куб
 U+10B14 Russian:болого
@@ -1161,7 +1169,7 @@ U+10B1D Russian:крат
 U+10B1E Russian:собака
 U+10B1F Russian:плавить
 U+10B20 Russian:болого
-U+10B25 Russian:скудный
+U+10B25 Russian:дон
 U+10B28 Russian:волна
 U+10B2C Russian:вид
 U+10B2D Russian:болого
