@@ -68,6 +68,27 @@ log = logging.getLogger(__name__)
 _H3_RE = re.compile(rb"<h3>([^<]+)</h3>")
 
 
+def _strip_html_envelope(body: bytes) -> bytes:
+    """Strip a leading ``<html>`` and trailing ``</html>`` (plus trailing
+    whitespace) from a per-locale body produced by ``df_writer.write_df``.
+
+    Per-locale ``.df`` writes each entry's body as
+    ``<html><h3>Locale</h3>{body}</html>\\n\\n``. When the merge stacks
+    multiple locales (or D37/F18 case-variants, or D44/M14 synthetic bodies)
+    under one ``@`` headword, those per-locale envelopes must be unwrapped so
+    the merged body can be re-wrapped in a single outer envelope. Otherwise
+    the merged entry carries N opens / N closes — strict SAX/XML renderers
+    (e.g. some StarDict viewers) abort on the second root and truncate the
+    on-screen entry to whatever rendered before the first close tag.
+    """
+    inner = body.rstrip(b" \t\r\n")
+    if inner.startswith(b"<html>"):
+        inner = inner[len(b"<html>"):]
+    if inner.endswith(b"</html>"):
+        inner = inner[:-len(b"</html>")]
+    return inner
+
+
 def _split_entry(entry_bytes: bytes) -> tuple[list[bytes], bytes]:
     """Split an entry's raw bytes into ``(preamble_lines, body_bytes)``.
 
@@ -233,10 +254,13 @@ def _merge_case_fold_group(
     out_parts.extend(sorted_amps)
 
     # ---- Body ----
+    # Strip the per-locale ``<html>...</html>`` envelope from every contributing
+    # body. The merged entry is re-wrapped in a single outer envelope below so
+    # strict SAX/XML renderers see exactly one well-formed root per entry.
     body_parts: list[bytes] = []
     for idx, hw, eb in canonical_sorted:
         _, body = _split_entry(eb)
-        body_parts.append(body)
+        body_parts.append(_strip_html_envelope(body))
 
     if canonical_sorted and other_sorted:
         # Case-variant coalescing separator (D37 Option A — universally
@@ -245,10 +269,16 @@ def _merge_case_fold_group(
 
     for idx, hw, eb in other_sorted:
         _, body = _split_entry(eb)
-        annotated = _annotate_h3_with_capitalized_form(body, hw)
+        annotated = _annotate_h3_with_capitalized_form(
+            _strip_html_envelope(body), hw
+        )
         body_parts.append(annotated)
 
-    out_parts.extend(body_parts)
+    # Single outer envelope per merged entry. Multiple stacked ``<html>...
+    # </html>`` blocks break strict SAX parsers (some StarDict viewers
+    # truncate to the first close tag); one envelope satisfies the single-
+    # root requirement.
+    out_parts.append(b"<html>" + b"".join(body_parts) + b"</html>")
 
     merged = b"".join(out_parts)
     if not merged.endswith(b"\n\n"):

@@ -41,11 +41,27 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from engrish.constants import FORM_NAMES
+
+
+# Matches every ``&`` that is *not* already the leading character of a valid
+# XML/HTML entity reference (numeric ``&#NN;``/``&#xNN;`` or named ``&name;``).
+# Repairs raw ampersands leaked from upstream wikidict render output
+# (e.g. ``ISO 639-2 & ISO 639-3``) without disturbing existing escapes
+# (``&#32;``, ``&amp;``, ``&nbsp;``, ``&lrm;``, ...). Required to keep entry
+# HTML well-formed for strict SAX/XML renderers (some StarDict viewers).
+_LONE_AMP_RE = re.compile(
+    r"&(?!(?:#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);)"
+)
+
+
+def _escape_lone_amps(s: str) -> str:
+    return _LONE_AMP_RE.sub("&amp;", s)
 
 
 class DuplicateEntryError(AssertionError):
@@ -68,16 +84,16 @@ def _render_html_body(entry: dict[str, Any]) -> str:
         parts.append(f"<p><b>{html.escape(pos)}</b></p><ol>")
         for d in defs:
             if isinstance(d, str):
-                parts.append(f"<li>{d}</li>")
+                parts.append(f"<li>{_escape_lone_amps(d)}</li>")
             elif isinstance(d, (list, tuple)):
                 parts.append('<ol style="list-style-type:lower-alpha">')
                 for sub in d:
                     if isinstance(sub, str):
-                        parts.append(f"<li>{sub}</li>")
+                        parts.append(f"<li>{_escape_lone_amps(sub)}</li>")
                     elif isinstance(sub, (list, tuple)):
                         parts.append('<ol style="list-style-type:lower-roman">')
                         for sub_sub in sub:
-                            parts.append(f"<li>{sub_sub}</li>")
+                            parts.append(f"<li>{_escape_lone_amps(sub_sub)}</li>")
                         parts.append("</ol>")
                 parts.append("</ol>")
         parts.append("</ol>")
@@ -86,11 +102,11 @@ def _render_html_body(entry: dict[str, Any]) -> str:
     if etymology:
         for etym in etymology:
             if isinstance(etym, str):
-                parts.append(f"<p>{etym}</p>")
+                parts.append(f"<p>{_escape_lone_amps(etym)}</p>")
             elif isinstance(etym, (list, tuple)):
                 parts.append("<ol>")
                 for sub_etym in etym:
-                    parts.append(f"<li>{sub_etym}</li>")
+                    parts.append(f"<li>{_escape_lone_amps(sub_etym)}</li>")
                 parts.append("</ol>")
         parts.append("<br/>")
 
