@@ -16,6 +16,7 @@
             "fonts": [
                 "NotoColorEmoji",
                 "NotoEmoji",
+                "NotoEmojiV2",
                 "NotoMusic",
                 "NotoSans",
                 "NotoSansArabic",
@@ -102,6 +103,7 @@
                 "NotoSansSymbols",
                 "NotoSansSymbols2",
                 "NotoSansSyriac",
+                "NotoSansTagalog",
                 "NotoSansTaiLe",
                 "NotoSansTaiTham",
                 "NotoSansTaiViet",

@@ -539,6 +539,14 @@ _UNMERGEABLE_TABLES: tuple[str, ...] = (
     "vhea",
     "vmtx",
     "VORG",
+    # Color-layer tables on COLRv1 vector emoji fonts (e.g. Noto-COLRv1).
+    # `fontTools.merge.Merger` has no merge logic for COLR / CPAL; stripping
+    # them keeps the underlying `glyf` outlines intact so the merged TTF
+    # carries the emoji codepoints as monochrome silhouettes. StarDict /
+    # EPUB readers render body text monochrome, so the color loss is nil
+    # for the dictionary use case — the alternative is no emoji at all.
+    "COLR",
+    "CPAL",
 )
 
 
@@ -1005,16 +1013,60 @@ def build_form_fonts(
 
     source_union = union_source_coverage(sources)
 
+    # Synthesize a TTF for codepoints not covered by any on-disk Noto by
+    # vectorizing the matching Wikimedia Commons SVG (newly-encoded Unicode
+    # additions, asteroid/alchemical symbols, IDC chars, etc. — Wiktionary
+    # itself embeds these as SVG images rather than as text). The synth
+    # font is tracked separately and only joined into a style-pair's source
+    # list if its glyphs intersect that pair's codepoints — otherwise the
+    # subsetter would strip every glyph and produce a degenerate font that
+    # crashes the merger.
+    synth_path: Path | None = None
+    synth_cmap: set[int] = set()
+    uncovered = scanned.all_codepoints - source_union
+    if uncovered:
+        from engrish.config import DATA_DIR
+        from engrish.wikimedia_svg import build_wikimedia_glyph_font, cmap_of
+
+        cache_dir = DATA_DIR / "engrish" / "wikimedia_svg_cache"
+        result_path, found, missing_cps = build_wikimedia_glyph_font(
+            uncovered, out_dir / "wikimedia_symbols.ttf", cache_dir
+        )
+        if result_path is not None:
+            synth_path = result_path
+            synth_cmap = cmap_of(result_path)
+            source_union |= synth_cmap
+            log.info(
+                "[%s] font: Wikimedia SVG synth added %d glyph(s); "
+                "%d cps had no SVG available",
+                form, len(found), len(missing_cps),
+            )
+        else:
+            log.info(
+                "[%s] font: no Wikimedia SVGs found for %d uncovered cps",
+                form, len(uncovered),
+            )
+
     rb_codepoints = scanned.per_style[STYLE_REGULAR] | scanned.per_style[STYLE_BOLD]
     ib_codepoints = scanned.per_style[STYLE_ITALIC] | scanned.per_style[STYLE_BOLD_ITALIC]
+
+    def _sources_for_style(style_codepoints: set[int]) -> list[Path]:
+        """Include the synth font only when its cmap overlaps this style's cps."""
+        if synth_path is not None and (synth_cmap & style_codepoints):
+            return sources + [synth_path]
+        return sources
 
     reset_subset_counter()
 
     # Subset returns per-source lists (no merge yet — fontTools.merge can't
     # handle variable fonts; merge happens downstream after instantiation).
-    rb_subsetted = subset_for_style_pair(sources, rb_codepoints) if rb_codepoints else None
+    rb_subsetted = (
+        subset_for_style_pair(_sources_for_style(rb_codepoints), rb_codepoints)
+        if rb_codepoints else None
+    )
     ib_subsetted = (
-        subset_for_style_pair(sources, ib_codepoints) if ib_codepoints else None
+        subset_for_style_pair(_sources_for_style(ib_codepoints), ib_codepoints)
+        if ib_codepoints else None
     )
 
     outputs: dict[str, Path] = {}
