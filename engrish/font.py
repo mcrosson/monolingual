@@ -734,6 +734,8 @@ def pairwise_merge(fonts: list) -> "TTFont":  # noqa: F821
         # Pairwise fold-left, with per-step exception handling: if a single
         # source can't be merged after stripping, skip it (its codepoints
         # surface in the D30 Tier-3 warning channel).
+        from fontTools.ttLib.tables.otBase import OTLOffsetOverflowError
+
         accumulator = paths[0]
         for next_path in paths[1:]:
             try:
@@ -744,6 +746,51 @@ def pairwise_merge(fonts: list) -> "TTFont":  # noqa: F821
                 merged.save(tmp_out.name)
                 accumulator = tmp_out.name
                 tmps.append(tmp_out)
+            except OTLOffsetOverflowError as exc:
+                # The merged GSUB/GPOS table can't fit its lookup offsets in
+                # 16 bits even after fontTools' built-in Extension-Lookup
+                # promotion. Strip the source's layout tables and retry —
+                # this preserves cmap → glyf coverage (the codepoints render)
+                # at the cost of layout shaping (ligatures, combining-mark
+                # positioning) for the source's script. StarDict / EPUB
+                # readers consult cmap → glyf for body text and don't invoke
+                # GSUB/GPOS at render time, so the visual impact is nil for
+                # the dictionary use case.
+                #
+                # Observed live for ``NotoSerifTibetan[wght].ttf`` in the
+                # 12-locale form once the accumulator carries ~100+ sources'
+                # GSUB lookups; without this retry the source would be
+                # silently dropped and its 71 Tibetan codepoints would
+                # vanish from the merged TTF even though coverage_gaps.txt
+                # claimed them as covered (the gaps file checks
+                # source_union, not the generated cmap).
+                log.warning(
+                    "pairwise_merge: GSUB/GPOS overflow merging %s; "
+                    "retrying with layout tables stripped: %s",
+                    next_path, exc,
+                )
+                try:
+                    src_font = TTFont(next_path)
+                    for tag in ("GSUB", "GPOS", "GDEF"):
+                        if tag in src_font:
+                            del src_font[tag]
+                    tmp_nolyt = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+                    tmp_nolyt.close()
+                    src_font.save(tmp_nolyt.name)
+                    tmps.append(tmp_nolyt)
+                    merger = Merger()
+                    merged = merger.merge([accumulator, tmp_nolyt.name])
+                    tmp_out = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
+                    tmp_out.close()
+                    merged.save(tmp_out.name)
+                    accumulator = tmp_out.name
+                    tmps.append(tmp_out)
+                except Exception as retry_exc:  # noqa: BLE001
+                    log.warning(
+                        "pairwise_merge: layout-strip retry also failed for %s; "
+                        "dropping source: %s",
+                        next_path, retry_exc,
+                    )
             except Exception as exc:  # noqa: BLE001 — fontTools merge raises bare classes
                 log.warning(
                     "pairwise_merge: dropping source %s; merge failed after table-strip: %s",
