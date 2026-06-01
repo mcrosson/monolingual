@@ -552,6 +552,29 @@ def _strip_unmergeable_tables(font) -> list[str]:
     return dropped
 
 
+def _normalize_upem(font, target_upem: int) -> bool:
+    """Scale a font to ``target_upem`` if its head.unitsPerEm differs. Returns True if scaled.
+
+    fontTools.merge.Merger requires all inputs to share the same units-per-em;
+    on mismatch it raises ``AssertionError: Expected all items to be equal:
+    [2048, 1000]`` (or similar) and the pairwise fold drops the source. Almost
+    every Noto outline font uses UPM 1000, but a handful (notably
+    ``NotoEmoji[wght].ttf`` at UPM 2048) diverge — when one of those becomes
+    the accumulator in the pairwise fold, every subsequent UPM-1000 source
+    fails and is silently dropped, collapsing the merged cmap to a small
+    subset of what the source-union promised.
+
+    ``fontTools.ttLib.scaleUpem.scale_upem`` rescales glyf outlines + head /
+    hhea / OS-2 metrics + GPOS positioning to the new UPM. Visually
+    indistinguishable for body-text rendering.
+    """
+    if font["head"].unitsPerEm == target_upem:
+        return False
+    from fontTools.ttLib.scaleUpem import scale_upem
+    scale_upem(font, target_upem)
+    return True
+
+
 def _convert_cff_to_tt(font):
     """Convert a CFF (.otf-style) font to TT (glyf/loca) in-place.
 
@@ -677,6 +700,16 @@ def pairwise_merge(fonts: list) -> "TTFont":  # noqa: F821
     # write each font to a tempfile, then pass paths.
     import tempfile
 
+    # Pick the modal UPM among inputs as the merge target. Most Noto outline
+    # fonts ship at UPM 1000; the rare outliers (e.g. NotoEmoji at 2048) get
+    # scaled to match. Tie-breaking on count alone is fine — the first font in
+    # the list is the accumulator and using its UPM avoids scaling it.
+    upem_counts: dict[int, int] = {}
+    for f in fonts:
+        u = f["head"].unitsPerEm
+        upem_counts[u] = upem_counts.get(u, 0) + 1
+    target_upem = max(upem_counts, key=lambda u: (upem_counts[u], u == fonts[0]["head"].unitsPerEm))
+
     paths: list[str] = []
     tmps: list = []
     try:
@@ -690,6 +723,8 @@ def pairwise_merge(fonts: list) -> "TTFont":  # noqa: F821
             dropped = _strip_unmergeable_tables(f)
             if dropped:
                 log.debug("pairwise_merge: stripped unmergeable tables %s from source", dropped)
+            if _normalize_upem(f, target_upem):
+                log.debug("pairwise_merge: scaled source UPM to %d", target_upem)
             tmp = tempfile.NamedTemporaryFile(suffix=".ttf", delete=False)
             tmp.close()
             f.save(tmp.name)
